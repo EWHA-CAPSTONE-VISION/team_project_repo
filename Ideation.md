@@ -1,21 +1,24 @@
 # Project Ideation (Version 0.1 Draft)
 
 ## 1. Team Background
-- 공통 관심사: 컴퓨터 비전, 특히 **적은 데이터**나 **환경 영향이 큰 이미지 데이터**를 안정적으로 처리하는 방법.
+- 공통 관심사: Computer Vision
 
-## 2. 관심 분야
-- **바이오 이미징 (Bio-Imaging)**
-  - 세포, 현미경 이미지 등 특수한 바이오 데이터
-  - 데이터가 적고 노이즈가 많아 기존 CV 기법 적용이 까다로움
+## 2. Keywords
+- Bio-Imaging
+- Robust Computer Vision
+- Few-shot Learning
 
-## 3. 아이디어 후보
-- Few-shot / Low-shot 학습으로 소량의 바이오 이미지 분류
-- 노이즈·저해상도 데이터를 복원/향상하는 모델
-- GAN/Diffusion을 이용한 합성 데이터 생성 및 증강
-- 영상 + 유전체 정보 등 멀티모달 접근
+## 3. Project Direction
+- **누구를 위해?**  
+  연구자와 의료진 등 바이오 데이터를 다루는 사람들  
 
-## 4. Next Steps
-- 지도 교수님께 주제 방향 조언 받기
-- 데이터셋 후보 조사
-- baseline 모델 탐색 후 작은 실험부터 시작
+- **누구의 어떤 문제 해결을 위해?**  
+  데이터 수가 적거나 환경 영향을 많이 받아 분석이 어려운 **바이오 이미징 데이터 처리 문제**  
+
+- **어떤 기술을 사용해서?**  
+  컴퓨터 비전 기법 (Few-shot Learning, Noise-robust CV, Generative Models)  
+
+- **무얼 만들려고 하는가?**  
+  적은 데이터로도 안정적으로 학습·분석 가능한 **바이오 이미징 처리 모델/시스템**  
+
 
