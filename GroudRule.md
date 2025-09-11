@@ -1,17 +1,31 @@
-# Team Ground Rules (Version 0.1 Draft)
+# Team Ground Rules (Version 0.9 Draft)
 
 ## 1. Communication
-- 주간 미팅 : 최소 주 1회 (오프라인/온라인)
-- 의사소통 채널 : 카카오톡, Slack (중요 알림은 Notion에 기록)
-- 회의록은 돌아가며 작성 후 공유
+- 주간 미팅 : 고정 주 1회 (화요일 14시), 추가 미팅 필요시 시간 협의 후 진행
+- 의사소통 채널 : 카카오톡, Notion
+- 회의록: 돌아가며 Notion에 작성
 
 ## 2. Collaboration
 - GitHub을 통한 버전 관리 및 코드 공유
-- Commit Message 규칙 준수 (예: [feat], [fix], [docs], [refactor])
+- Commit Message 규칙 준수
+  
+  형식:
+  ```
+  [태그] 작업 내용 (한 줄 요약)
+  ```
+  주요 태그:
+  |태그|설명|
+  |---|---|
+  |`[feat]`|기능 추가|
+  |`[fix]`|버그 수정|
+  |`[docs]`|문서 수정|
+  |`[refactor]`|리팩토링(기능 변화X)|
+  
 - Pull Request 시 최소 1인 이상 리뷰 후 머지
 
 ## 3. Work Distribution
-- 역할 분담 : 데이터, 모델링, 프론트엔드/백엔드, 문서화
+- 역할 분담 : 데이터 수집, 전처리, 모델링, 문서화 등
+- 기타 분담 필요한 테스크 발생시 그때그때 논의하여 분배
 - 각자 맡은 영역에 대해 책임감을 가지고 진행
 - 어려움이 생기면 즉시 공유하여 해결
 
