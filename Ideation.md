@@ -1,7 +1,7 @@
 # Project Ideation (Version 0.9 Draft)
 
 ## 1. Team Background
-- 컴퓨터공학과 2명, 생명공학과 1명으로 구성
+- 컴퓨터공학과 2명, 생명과학과 1명으로 구성
 - 공통 관심사: Computer Vision, biomedical AI
 
 
