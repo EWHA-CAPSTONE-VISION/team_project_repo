@@ -10,7 +10,7 @@
 
 
 ## ✔️ Research Theme
-**연구주제명**: 멀티모달 의료·바이오 데이터를 위한 경량화된 설명가능 AI 연구  
+**연구주제명**: Multimodal 의료&바이오 데이터 기반 tumor 예측 경량 XAI 모델  
 
 
 ## ✔️ File Structure
