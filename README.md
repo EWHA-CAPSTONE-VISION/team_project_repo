@@ -29,8 +29,8 @@
 | 단계 | 설명 | 진행도 |
 | ---- | ---- | ---- |
 | **0. 프로젝트 주제 확정** | 문제 정의 및 목적 설정 | 완료 |
-| **1. 데이터셋 조사 및 전처리 파이프라인 기획** | ST/WSI 데이터 구조 분석, HEST-1k 등 후보군 조사 | 완료 |
-| **2. Baseline 모델 설계 및 구현** | 멀티모달 dual-encoder 구성(이미지/유전자) 및 성능 비교 | 진행 중 |
+| **1. 데이터셋 조사 및 전처리** | 데이터셋 후보 조사, 구조 분석 | 완료 |
+| **2. Baseline 모델 설계 및 구현** | 멀티모달 dual-encoder 구성 및 성능 비교 | 진행 중 |
 | **3. 모델 개선 / XAI 적용** | 경량화·성능 개선·downstream task 실험 | 예정 |
 
 ## ✔️ Data & Method
@@ -43,11 +43,11 @@
 - 공개 멀티모달 의료 데이터셋(e.g., HEST-1k, STimage-1K4M)
 
 **Modeling**
-- Image Encoder
-- Gene Encoder
-- Multimodal Fusion
+- Image Encoder(CNN, ViT, etc.)
+- Gene Encoder(scBERT, etc.)
+- Multimodal Fusion(단순 concat, cosine similarity 기반, etc.)
 
-**Explainability**
+**Explainability(설명 가능성)**
 - Attention heatmap
 - Patch-level feature importance
 - Gene-level attribution 분석
@@ -56,7 +56,7 @@
 
 | 이름   | GitHub | Profile |
 |--------|--------|---------|
-| 류다현 | [@unhyepnhj1](https://github.com/unhyepnhj) | <img src="https://avatars.githubusercontent.com/github-id1" width="50" height="50"> |
+| 류다현 | [@unhyepnhj](https://github.com/unhyepnhj) | <img src="https://avatars.githubusercontent.com/github-id1" width="50" height="50"> |
 | 박은서 | [@oukl31](https://github.com/oukl31) | <img src="https://avatars.githubusercontent.com/github-id2" width="50" height="50"> |
 | 유지혜 | [@jihyeyoo](https://github.com/jihyeyoo)   | <img src="https://avatars.githubusercontent.com/jihyeyoo" width="50" height="50"> |
 
