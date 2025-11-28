@@ -1,33 +1,56 @@
-# 25-2 캡스톤 디자인 프로젝트 (Version 0.9)
+# 25-2 캡스톤 디자인 프로젝트
+25-2 이화여자대학교 컴퓨터공학과 졸업 프로젝트(캡스톤디자인과창업프로젝트A)를 위한 repository입니다.
 
 ## ✔️ Project Overview
-**2025학년도 2학기 졸업 프로젝트**를 위한 레포지토리입니다.
 
+- **연구 주제**: 멀티모달 의료&바이오 데이터를 이용한 경량 tumor 예측 XAI 모델
+- **문제 정의**: 현 의료 AI는
+  - 단일 모달리티(이미지·유전자) 의존,
+  - 추론 속도·모델 크기·해석 가능성의 한계
+    
+  를 동시에 해결하지 못하는 경우가 많습니다.
+  
+  본 프로젝트는 WSI(조직 이미지) + Spatial Transcriptomics(ST) 유전자 발현 정보를 통합해
+  “실제 임상 환경에서도 사용 가능한 경량·해석가능 모델”을 구현합니다.
 
-## ✔️ Goal
-- **Computer Vision과 Bio/Medical data**를 결합한 연구
-- 특히 **노이즈가 많거나 수동 분석이 어려운 Bio/Medical data를 AI로 자동 처리**하여 다양한 환경(기기, 측정 조건, 사용자)에 범용적으로 적용 가능한 모델을 설계
+## ✔️ Repository Structure
+```
+.
+├── README.md          # 프로젝트 개요 (본 문서)
+├── Ideation.md        # 로젝트 아이디어 브레인스토밍 및 발전 기록
+├── GroundRule.md      # 팀 협업 규칙 및 합의 사항
+├── /src               # 소스 코드 (데이터 처리, 모델, 실험)
+├── /data              # 데이터셋 (필요 시)
+└── /docs              # 참고 문헌, 기술 문서
+```
 
+## ✔️ Project Status & Current Progress
 
-## ✔️ Research Theme
-**연구주제명**: Multimodal 의료&바이오 데이터 기반 tumor 예측 경량 XAI 모델  
+| 단계 | 설명 | 진행도 |
+| ---- | ---- | ---- |
+| **0. 프로젝트 주제 확정** | 문제 정의 및 목적 설정 | 완료 |
+| **1. 데이터셋 조사 및 전처리 파이프라인 기획** | ST/WSI 데이터 구조 분석, HEST-1k 등 후보군 조사 | 완료 |
+| **2. Baseline 모델 설계 및 구현** | 멀티모달 dual-encoder 구성(이미지/유전자) 및 성능 비교 | 진행 중 |
+| **3. 모델 개선 / XAI 적용** | 경량화·성능 개선·downstream task 실험 | 예정 |
 
+## ✔️ Data & Method
 
-## ✔️ File Structure
-- `README.md` : 레포지토리 개요 (현재 문서)  
-- `Ideation.md` : 프로젝트 아이디어 브레인스토밍 및 발전 기록  
-- `GroundRule.md` : 팀 협업 규칙 및 합의사항  
-- `/src` : 소스코드 및 실험 코드  (필요시)
-- `/data` : 실험용 데이터셋  (필요시)
-- `/docs` : 참고 문헌 및 기술 문서  (필요시)
+본 프로젝트는 다음과 같은 기술 스택을 기반으로 합니다.
 
+**Data**
+- Whole Slide Image(WSI)
+- Spatial Transcriptomics(ST) gene expression
+- 공개 멀티모달 의료 데이터셋(e.g., HEST-1k, STimage-1K4M)
 
-## ✔️ Current Status
-- **주제 확정**: 멀티모달 바이오·의료 데이터 경량 AI 연구  
-- **1단계**: 데이터셋 후보 조사 및 전처리 파이프라인 기획  
-- **2단계**: Baseline 모델(N2V, UNet, DDPM, Transformer) 학습 및 성능 비교 예정  
-- **3단계**: 하이브리드 모델 설계 및 downstream task 평가 예정 
+**Modeling**
+- Image Encoder
+- Gene Encoder
+- Multimodal Fusion
 
+**Explainability**
+- Attention heatmap
+- Patch-level feature importance
+- Gene-level attribution 분석
 
 ## ✔️ Team Members
 
