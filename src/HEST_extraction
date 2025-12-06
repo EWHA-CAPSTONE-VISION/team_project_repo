@@ -22,7 +22,7 @@ print(table)
 # =======================================================
 # Data Download
 # =======================================================
-DOWNLOAD_ALL = True        # 전체 폴더 다운받을지 or 일부 폴더만 다운받을지
+DOWNLOAD_ALL = False        # 전체 폴더 다운받을지 or 일부 폴더만 다운받을지
 FOLDERS = ['metadata', 'st', 'patches'] # 일부 폴더만 다운받을 경우 받을 폴더 목록 설정(현재 /metadata, /st, /patches 폴더만)
 
 import datasets
