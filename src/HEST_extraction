@@ -1,0 +1,65 @@
+# !pip install huggingface-hub
+
+from huggingface_hub import login
+import pandas as pd
+
+login(token="YOUR TOKEN")
+
+# =======================================================
+# Data Overview
+# =======================================================
+
+meta_df = pd.read_csv("hf://datasets/MahmoodLab/hest/HEST_v1_1_0.csv")
+
+pd.set_option('display.max_rows', None)
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', 0)
+pd.set_option('display.expand_frame_repr', False)
+
+table = pd.crosstab(meta_df['organ'], meta_df['disease_state']).sort_index()  # 장기별 disease state 개수 카운트
+print(table)
+
+# =======================================================
+# Data Download
+# =======================================================
+DOWNLOAD_ALL = True        # 전체 폴더 다운받을지 or 일부 폴더만 다운받을지
+FOLDERS = ['metadata', 'st', 'patches'] # 일부 폴더만 다운받을 경우 받을 폴더 목록 설정(현재 /metadata, /st, /patches 폴더만)
+
+import datasets
+import os
+import zipfile
+from huggingface_hub import snapshot_download
+from tqdm import tqdm
+
+def download_hest(patterns, local_dir, download_all):
+    repo_id = 'MahmoodLab/hest'
+
+    if not download_all:
+      folders = FOLDERS
+      allow_patterns = []
+      for fid in ids_to_query:
+          for folder in folders:
+              allow_patterns.append(f"{folder}/{fid}*")
+      snapshot_download(repo_id=repo_id, allow_patterns=allow_patterns, repo_type="dataset", local_dir=local_dir)
+
+    else:
+      snapshot_download(repo_id=repo_id, allow_patterns=patterns, repo_type="dataset", local_dir=local_dir)
+
+    seg_dir = os.path.join(local_dir, 'cellvit_seg')
+    if os.path.exists(seg_dir):
+        print('Unzipping cell vit segmentation...')
+        for filename in tqdm([s for s in os.listdir(seg_dir) if s.endswith('.zip')]):
+            path_zip = os.path.join(seg_dir, filename)
+
+            with zipfile.ZipFile(path_zip, 'r') as zip_ref:
+                zip_ref.extractall(seg_dir)
+
+local_dir='hest_data' # 데이터 root 폴더
+
+# Filter the dataframe by organ, oncotree code...
+meta_df = meta_df[meta_df['organ'].isin(['Bowel', 'Brain', 'Kidney'])]
+
+ids_to_query = meta_df['id'].values
+list_patterns = [f"*{id}[_.]**" for id in ids_to_query]
+
+download_hest(list_patterns, local_dir, DOWNLOAD_ALL) # see method definition above
