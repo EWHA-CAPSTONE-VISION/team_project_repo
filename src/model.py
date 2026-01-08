@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 import torch.nn.functional as F
+from transformers import AutoModel, AutoTokenizer
 
 # -------------------------------------------------------
 # 1. Image Encoder (CNN or ViT alternative)
@@ -19,9 +20,9 @@ class ImageEncoder(nn.Module):
         return self.backbone(x)  # -> (B, embed_dim)
 
 # -------------------------------------------------------
-# 2. ST Encoder (scBERT-style simplified version)
+# 2. ST Encoder (single cell + spatial version)
 # -------------------------------------------------------
-class STEncoder(nn.Module):
+class SCEncoder(nn.Module):
     def __init__(self, num_genes, embed_dim=256):
         super().__init__()
         # Convert raw gene expression vector → embedding
@@ -56,6 +57,63 @@ class STEncoder(nn.Module):
         x = x.squeeze(1)
 
         return self.fc(x)
+    
+class STEncoder(nn.Module):
+    def __init__(self, embed_dim=256):
+        super().__init__()
+        # Convert (x, y) -> embedding
+        self.spatial_embed = nn.Sequential(
+            nn.Linear(2, embed_dim//2),  # 2D -> D/2
+            nn.LayerNorm(embed_dim//2),
+            nn.ReLU()
+        )
+        
+        # Positional encoding
+        self.pos_enc = nn.Sequential(
+            nn.Linear(2, embed_dim//2),
+            nn.LayerNorm(embed_dim//2),
+            nn.Tanh()   # range: [-1, 1]           
+        )
+
+        # CLS token + spatial token
+        self.cls_token = nn.Parameter(torch.randn(1, 1, embed_dim))
+
+        # Transformer Encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim,
+            nhead=8,
+            batch_first=True,
+            dropout = 0.1,
+            activation = 'gelu'
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=4)
+        
+        # Final projection layer
+        self.fc = nn.Seqeuntail(
+            nn.LayerNorm(embed_dim),
+            nn.Linear(embed_dim, embed_dim),
+            nn.Dropout(0.1)
+        )
+
+    def forward(self, x):
+        # x: (B, 2) / spatial codinates (x, y)
+        B = x.coords.shape[0]
+
+        spatial_emb = self.spatial_embed(x)   # (B, D/2)
+        pos_emb = self.pos_enc(x)             # (B, D/2)
+        token_emb = torch.cat([spatial_emb, pos_emb], dim=-1)
+
+        # CLS token + spatial token
+        cls = self.cls_toekn.expand(B, 1, -1)                 # (B, 1, D)
+        seq = torch.cat([cls, token_emb.unsqueeze(1)], dim=1) # (B, 2, D)
+
+        # Apply transformer
+        seq = self.transformer(seq) # (B, 2, D)
+
+        # Apply CLS token
+        seq = seq[:,0,:]            # (B, D)
+
+        return self.fc(seq)
 
 # -------------------------------------------------------
 # 3. Fusion Layer
@@ -63,9 +121,10 @@ class STEncoder(nn.Module):
 class FusionLayer(nn.Module):
     """
     Fusion options (fused_dim=128):
-    - 'concat'  : concat([img, st]) -> MLP -> fused (B, fused_dim)
-    - 'attn'    : treat [img, st] as 2 tokens -> self-attn -> pool -> fused (B, fused_dim)
-    - 'sim'     : concat([img, st, img*st, |img-st|, cosine(img, st)]) -> MLP -> fused (B, fused_dim)
+    - 'concat'  : concat([img, sc, st]) -> MLP -> fused (B, fused_dim)
+    - 'attn'    : treat [img, sc, st] as 3 tokens -> self-attn -> pool -> fused (B, fused_dim)
+    - 'sim'     : concat([img, st, img*st, |img-st|, cosine(img, st)]) -> MLP -> fused (B, fused_dim) / only for 2-encoder fusion
+    - 'gate'    : gate ([img, sc, st]) -> MLP -> fused (B, fused_dim)
     """
     def __init__(
             self,
@@ -85,13 +144,15 @@ class FusionLayer(nn.Module):
         
         # pre-norm for modality feature alignment
         self.pre_norm_img = nn.LayerNorm(embed_dim)
+        self.pre_norm_sc = nn.LayerNorm(embed_dim)
         self.pre_norm_st = nn.LayerNorm(embed_dim)
 
         if fusion_option == 'concat':
             self.concat_fusion = nn.Sequential(
-                nn.Linear(embed_dim * 2, fused_dim),
+                nn.Linear(embed_dim * 3, fused_dim*2),
                 nn.ReLU(),
-                nn.Dropout(dropout)
+                nn.Dropout(dropout),
+                nn.Linear(fused_dim * 2, fused_dim)
             )
 
         elif fusion_option == 'attn':
@@ -121,12 +182,30 @@ class FusionLayer(nn.Module):
                 nn.ReLU(),
                 nn.Dropout(dropout)
             )
+
+        elif fusion_option == 'gate':
+            self.gate_fusion = nn.Sequential(
+                nn.Linear(embed_dim * 3, embed_dim),
+                nn.ReLU(),
+                nn.Linear(embed_dim, 3),  # gate weights for 3 modalities
+                nn.Softmax(dim=-1)
+            )
+            self.proj_img = nn.Linear(embed_dim, fused_dim)
+            self.proj_sc = nn.Linear(embed_dim, fused_dim)
+            self.proj_st = nn.Linear(embed_dim, fused_dim)
+            self.gate_final = nn.Sequential(
+                nn.Linear(fused_dim, fused_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout)
+            )
+
         else:
             raise ValueError(f"Unknown fusion option={fusion_option}")
 
     def forward(self, img_feat: torch.Tensor, st_feat: torch.Tensor) -> torch.Tensor:
         """
         img_feat: (B, D)
+        sc_feat : (B, D)
         st_feat : (B, D)
         return  : (B, 128)
         """
@@ -143,22 +222,23 @@ class FusionLayer(nn.Module):
 
         # pre-norm to align distributions
         img_feat = self.pre_norm_img(img_feat)
+        sc_feat = self.pre_norm_sc(sc_feat)
         st_feat = self.pre_norm_st(st_feat)
 
         if self.fusion_option == 'concat':
-            x = torch.cat([img_feat, st_feat], dim=1)   # (B, 2D)
+            x = torch.cat([img_feat, sc_feat,st_feat], dim=1)   # (B, 3D)
             return self.concat_fusion(x)                # (B, fused_dim)
         
         elif self.fusion_option == 'attn':
-            # 2 tokens: [img_feat, st_feat]
-            tokens = torch.stack([img_feat, st_feat], dim=1)  # (B, 2, D)
+            # 3 tokens: [img_feat, sc_feat, st_feat]
+            tokens = torch.stack([img_feat, sc_feat, st_feat], dim=1)  # (B, 3, D)
             
             # Self-attn block + residual + norm
-            attn_out, _ = self.attn_fusion(tokens, tokens, tokens)  # (B, 2, D)
+            attn_out, _ = self.attn_fusion(tokens, tokens, tokens)  # (B, 3, D)
             tokens = self.norm1(tokens + attn_out)
 
             # FFN block + residual + norm
-            ffn_out = self.ffn(tokens)  # (B, 2, D)
+            ffn_out = self.ffn(tokens)  # (B, 3, D)
             tokens = self.norm2(tokens + ffn_out)
 
             pooled = tokens.mean(dim=1)     # (B, D)
@@ -178,6 +258,23 @@ class FusionLayer(nn.Module):
 
             x = torch.cat([img_n, st_n, prod, abs_diff, sim], dim=1)  # (B, 4D+1)
             return self.sim_fusion(x)  # (B, fused_dim)
+        
+        elif self.fusion_option == 'gate':
+            # Concat all modality
+            input = torch.cat([img_feat, sc_feat, st_feat], dim=-1)  # (B, 3D)
+            weights = self.gate_fusion(input)  # (B, 3)
+
+            # weighted sum of proj features
+            proj_img = self.proj_img(img_feat)  # (B, fused_dim)
+            proj_sc = self.proj_sc(sc_feat)     # (B, fused_dim)
+            proj_st = self.proj_st(st_feat)     # (B, fused_dim)
+
+            weighted = (weights[:, 0:1] * proj_img +
+                    weights[:, 1:2] * proj_sc +
+                    weights[:, 2:3] * proj_st)  # (B, fused_dim)
+            
+            return self.gate_final(weighted)
+
 
 # -------------------------------------------------------
 # 4. Full Multi-Modal Model (Fusion + Classifier)
@@ -192,9 +289,10 @@ class MultiModalHestModel(nn.Module):
         super().__init__()
         embed_dim = 256
         
-        # Two encoders
+        # Three encoders
         self.img_encoder = ImageEncoder(embed_dim=embed_dim)
-        self.st_encoder = STEncoder(num_genes=num_genes, embed_dim=embed_dim)
+        self.sc_encoder = SCEncoder(num_genes=num_genes, embed_dim=embed_dim)
+        self.st_encoder = STEncoder(embed_dim=embed_dim)
         
         print(f"Fusion option: {fusion_option}")
         
@@ -211,13 +309,14 @@ class MultiModalHestModel(nn.Module):
 
         # (Optional) hooks for XAI can be added later
 
-    def forward(self, img: torch.Tensor, expr: torch.Tensor) -> torch.Tensor:
+    def forward(self, img: torch.Tensor, expr: torch.Tensor, coord: torch.Tensor) -> torch.Tensor:
         # Encode each modality
         img_feat = self.img_encoder(img)      # (B, 256)
-        st_feat = self.st_encoder(expr)       # (B, 256)
+        sc_feat = self.sc_encoder(expr)       # (B, 256)
+        st_feat = self.st_encoder(coord)      # (B, 256)
         
         # Fusion module
-        fused = self.fusion(img_feat, st_feat)  # (B, 128)
+        fused = self.fusion(img_feat, sc_feat, st_feat)
 
         # Final prediction
         logits = self.classifier(fused)                   # (B, num_classes)
