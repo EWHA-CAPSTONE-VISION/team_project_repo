@@ -89,7 +89,7 @@ class STEncoder(nn.Module):
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=4)
         
         # Final projection layer
-        self.fc = nn.Seqeuntail(
+        self.fc = nn.Sequential(
             nn.LayerNorm(embed_dim),
             nn.Linear(embed_dim, embed_dim),
             nn.Dropout(0.1)
@@ -97,14 +97,14 @@ class STEncoder(nn.Module):
 
     def forward(self, x):
         # x: (B, 2) / spatial codinates (x, y)
-        B = x.coords.shape[0]
+        B = x.shape[0]
 
         spatial_emb = self.spatial_embed(x)   # (B, D/2)
         pos_emb = self.pos_enc(x)             # (B, D/2)
         token_emb = torch.cat([spatial_emb, pos_emb], dim=-1)
 
         # CLS token + spatial token
-        cls = self.cls_toekn.expand(B, 1, -1)                 # (B, 1, D)
+        cls = self.cls_token.expand(B, 1, -1)                 # (B, 1, D)
         seq = torch.cat([cls, token_emb.unsqueeze(1)], dim=1) # (B, 2, D)
 
         # Apply transformer
@@ -202,7 +202,7 @@ class FusionLayer(nn.Module):
         else:
             raise ValueError(f"Unknown fusion option={fusion_option}")
 
-    def forward(self, img_feat: torch.Tensor, st_feat: torch.Tensor) -> torch.Tensor:
+    def forward(self, img_feat: torch.Tensor, sc_feat: torch.Tensor, st_feat: torch.Tensor) -> torch.Tensor:
         """
         img_feat: (B, D)
         sc_feat : (B, D)

@@ -93,10 +93,11 @@ def main():
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
             imgs = batch["image"].to(DEVICE)
             exprs = batch["expr"].to(DEVICE)
+            coords = batch["coord"].to(DEVICE)
             labels = batch["label"].to(DEVICE)
             
             optimizer.zero_grad()
-            outputs = model(imgs, exprs)
+            outputs = model(imgs, coords, exprs)
             loss = criterion(outputs, labels)
             
             loss.backward()
@@ -120,9 +121,10 @@ def main():
             for batch in val_loader:
                 imgs = batch["image"].to(DEVICE)
                 exprs = batch["expr"].to(DEVICE)
+                coords = batch["coord"].to(DEVICE)
                 labels = batch["label"].to(DEVICE)
                 
-                outputs = model(imgs, exprs)
+                outputs = model(imgs, coords, exprs)
                 loss = criterion(outputs, labels)
                 
                 val_loss += loss.item()
