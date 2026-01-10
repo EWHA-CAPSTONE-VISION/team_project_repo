@@ -1,8 +1,12 @@
+import sys
+sys.path.insert(0, '../../scBERT')
+
 import torch
 import torch.nn as nn
 import torchvision.models as models
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
+from performer_pytorch.performer_pytorch import Performer
 
 # -------------------------------------------------------
 # 1. Image Encoder (CNN or ViT alternative)
@@ -25,38 +29,45 @@ class ImageEncoder(nn.Module):
 class SCEncoder(nn.Module):
     def __init__(self, num_genes, embed_dim=256):
         super().__init__()
-        # Convert raw gene expression vector → embedding
-        self.gene_embed = nn.Sequential(
-            nn.Linear(num_genes, embed_dim),
-            nn.LayerNorm(embed_dim),
-            nn.ReLU()
+        
+        # scBERT 구조의 Performer (LM wrapper 없이)
+        self.scbert = Performer(
+            dim=256,
+            depth=6,           # scBERT layers
+            dim_head=32,
+            heads=8,          # scBERT heads
+            ff_mult=4,
+            causal=False,      # bidirectional (scBERT)
+            attn_dropout=0.1
         )
         
-        # Transformer Encoder (core structure of scBERT)
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embed_dim,
-            nhead=4,
-            batch_first=True
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=2)
+        # Token embedding + projection
+        self.token_emb = nn.Embedding(7, 256)  # 7 bins
+        self.cls_token = nn.Parameter(torch.randn(1, 1, 256))
+        self.proj = nn.Linear(256, embed_dim)
+
+    def preprocess(self, expr):
+        """Raw counts → 7 bins"""
+        expr = torch.log1p(F.normalize(expr, p=1, dim=-1) * 1e4)
+        bins = torch.linspace(0, expr.max(), 8, device=expr.device)
+        tokens = torch.bucketize(expr, bins[:-1]).long()
+        tokens = torch.clamp(tokens, 0, 6)
+
+        return tokens
+    
+    def forward(self, expr):  # (B, num_genes)
+        B = expr.shape[0]
+        tokens = self.preprocess(expr)  # (B, G)
         
-        # Final projection layer
-        self.fc = nn.Linear(embed_dim, embed_dim)
-
-    def forward(self, x):
-        # x: (B, num_genes)
-        x = self.gene_embed(x)  # -> (B, embed_dim)
-
-        # Add sequence dimension for transformer: (B, 1, embed_dim)
-        x = x.unsqueeze(1)
-
-        # Apply transformer
-        x = self.transformer(x)  # -> (B, 1, embed_dim)
-
-        # Remove sequence dimension
-        x = x.squeeze(1)
-
-        return self.fc(x)
+        # CLS + tokens
+        cls = self.cls_token.expand(B, -1, -1)
+        x = torch.cat([cls, self.token_emb(tokens)], dim=1)
+        
+        # Performer forward
+        emb = self.scbert(x)  # (B, G+1, 256)
+        cell_emb = emb[:, 0]  # CLS pooling
+        
+        return self.proj(cell_emb)  # (B, embed_dim)
     
 class STEncoder(nn.Module):
     def __init__(self, embed_dim=256):

@@ -142,7 +142,7 @@ def create_hest_dataloader(samples, batch_size=4, shuffle=True):
 # 3) Manual execution for sanity check
 # -------------------------------------------------------
 if __name__ == "__main__":
-    root = "/workspace/Temp"
+    root = "../../hest_data"
     id_list = ["TENX24", "TENX39", "TENX97", "MISC61", "TENX153"]
 
     print("1. Loading samples manually...")

@@ -21,7 +21,7 @@ def main():
     # ---------------------------------------------------------
     # 1. Configuration
     # ---------------------------------------------------------
-    ROOT = "/workspace/Temp"
+    ROOT = "../../hest_data"
     BATCH_SIZE = 8        # Adjust depending on GPU memory
     LEARNING_RATE = 1e-4  # Learning rate
     EPOCHS = 5            # Small number for testing/trial
@@ -97,7 +97,7 @@ def main():
             labels = batch["label"].to(DEVICE)
             
             optimizer.zero_grad()
-            outputs = model(imgs, coords, exprs)
+            outputs = model(imgs, exprs, coords)
             loss = criterion(outputs, labels)
             
             loss.backward()
@@ -124,7 +124,7 @@ def main():
                 coords = batch["coord"].to(DEVICE)
                 labels = batch["label"].to(DEVICE)
                 
-                outputs = model(imgs, coords, exprs)
+                outputs = model(imgs, exprs, coords)
                 loss = criterion(outputs, labels)
                 
                 val_loss += loss.item()
