@@ -39,7 +39,7 @@ def download_hest(patterns, local_dir, download_all):
       allow_patterns = []
       for fid in ids_to_query:
           for folder in folders:
-              allow_patterns.append(f"{folder}/{fid}*")
+              allow_patterns.append(f"{folder}/{fid}[._]*")
       snapshot_download(repo_id=repo_id, allow_patterns=allow_patterns, repo_type="dataset", local_dir=local_dir)
 
     else:
