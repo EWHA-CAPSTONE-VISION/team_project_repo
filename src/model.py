@@ -5,23 +5,23 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 import torch.nn.functional as F
-from transformers import AutoModel, AutoTokenizer
-from performer_pytorch.performer_pytorch import Performer
+from performer_pytorch import Performer
 
-# -------------------------------------------------------
-# 1. Image Encoder (CNN or ViT alternative)
-# -------------------------------------------------------
+# =======================================================
+# 1. Image Encoder (Patch → Spot-level visual feature)
+# =======================================================
 class ImageEncoder(nn.Module):
     def __init__(self, embed_dim=256):
         super().__init__()
-        # Use lightweight ResNet18 (can replace with ViT if needed)
-        self.backbone = models.resnet18(pretrained=True)
-        # Replace final classification layer with embed_dim output
+        self.backbone = models.resnet18(weights="IMAGENET1K_V1")
         self.backbone.fc = nn.Linear(self.backbone.fc.in_features, embed_dim)
-        
+
     def forward(self, x):
-        # x: (B, 3, 224, 224)
-        return self.backbone(x)  # -> (B, embed_dim)
+        """
+        x: (N_spots, 3, 224, 224)
+        return: (N_spots, embed_dim)
+        """
+        return self.backbone(x)
 
 # -------------------------------------------------------
 # 2. ST Encoder (single cell + spatial version)
@@ -131,10 +131,11 @@ class STEncoder(nn.Module):
 # -------------------------------------------------------
 class FusionLayer(nn.Module):
     """
-    Fusion options (fused_dim=128):
+    Fusion options (fused_dim=256):
     - 'concat'  : concat([img, sc, st]) -> MLP -> fused (B, fused_dim)
     - 'attn'    : treat [img, sc, st] as 3 tokens -> self-attn -> pool -> fused (B, fused_dim)
-    - 'sim'     : concat([img, st, img*st, |img-st|, cosine(img, st)]) -> MLP -> fused (B, fused_dim) / only for 2-encoder fusion
+    - 'sim'    : concat([img, sc, st, img*sc, img*st, sc*st, |img-sc|, |img-st|, |sc-st|, cosine(img,sc), cosine(img,st), cosine(sc,st)]) 
+                -> MLP -> fused
     - 'gate'    : gate ([img, sc, st]) -> MLP -> fused (B, fused_dim)
     """
     def __init__(
@@ -186,7 +187,7 @@ class FusionLayer(nn.Module):
 
         elif fusion_option == 'sim':
             self.sim_fusion = nn.Sequential(
-                nn.Linear(embed_dim * 4 + 1, embed_dim * 2),
+                nn.Linear(embed_dim * 9 + 3, embed_dim * 2),
                 nn.ReLU(),
                 nn.Dropout(dropout),
                 nn.Linear(embed_dim * 2, fused_dim),
@@ -222,14 +223,14 @@ class FusionLayer(nn.Module):
         """
 
         # basic checks
-        if img_feat.ndim != 2 or st_feat.ndim != 2:
+        if img_feat.ndim != 2 or st_feat.ndim != 2 or sc_feat.ndim !=2:
             raise ValueError("Input features must be 2D tensors of shape (B, D)")
-        if img_feat.shape != st_feat.shape:
-            raise ValueError(f"Shape mismatch: {img_feat.shape} vs {st_feat.shape}")
-        if img_feat.device != st_feat.device:
-            raise ValueError(f"Device mismatch: {img_feat.device} vs {st_feat.device}")
-        if img_feat.dtype != st_feat.dtype:
-            raise ValueError(f"Dtype mismatch: {img_feat.dtype} vs {st_feat.dtype}")
+        if not (img_feat.shape == sc_feat.shape == st_feat.shape):
+            raise ValueError(f"Shape mismatch: {img_feat.shape} vs {sc_feat.shape} vs {st_feat.shape}")
+        if not (img_feat.device == sc_feat.device == st_feat.device):
+            raise ValueError(f"Device mismatch: {img_feat.device} vs {sc_feat.device} vs {st_feat.device}")
+        if not (img_feat.dtype == sc_feat.dtype == st_feat.dtype):
+            raise ValueError(f"Dtype mismatch: {img_feat.dtype} vs {sc_feat.dtype} vs {st_feat.dtype}")
 
         # pre-norm to align distributions
         img_feat = self.pre_norm_img(img_feat)
@@ -259,21 +260,40 @@ class FusionLayer(nn.Module):
             # Optionally L2-normalize features before cosine similarity
             if self.use_l2norm_for_sim:
                 img_n = F.normalize(img_feat, p=2, dim=1, eps=1e-8)
+                sc_n = F.normalize(sc_feat, p=2, dim=1, eps=1e-8)
                 st_n = F.normalize(st_feat, p=2, dim=1, eps=1e-8)
             else:
-                img_n = img_feat
-                st_n = st_feat
-            sim = F.cosine_similarity(img_n, st_n, dim=1, eps=1e-8).unsqueeze(1)  # (B, 1)
-            prod = img_n * st_n                 # (B, D)
-            abs_diff = torch.abs(img_n - st_n)  # (B, D)
+                 img_n, sc_n, st_n = img_feat, sc_feat, st_feat
 
-            x = torch.cat([img_n, st_n, prod, abs_diff, sim], dim=1)  # (B, 4D+1)
+             # pairwise cosine
+            cos_img_sc = F.cosine_similarity(img_n, sc_n, dim=1, eps=1e-8).unsqueeze(1)
+            cos_img_st = F.cosine_similarity(img_n, st_n, dim=1, eps=1e-8).unsqueeze(1)
+            cos_sc_st = F.cosine_similarity(sc_n, st_n, dim=1, eps=1e-8).unsqueeze(1)
+
+            # pairwise products
+            prod_img_sc = img_n * sc_n
+            prod_img_st = img_n * st_n
+            prod_sc_st = sc_n * st_n
+
+             # pairwise absolute differences
+            diff_img_sc = torch.abs(img_n - sc_n)
+            diff_img_st = torch.abs(img_n - st_n)
+            diff_sc_st = torch.abs(sc_n - st_n)
+
+            x = torch.cat(
+                [ img_n, sc_n, st_n,
+                    prod_img_sc, prod_img_st, prod_sc_st,
+                    diff_img_sc, diff_img_st, diff_sc_st,
+                    cos_img_sc, cos_img_st, cos_sc_st,
+                ],
+                dim=1,
+            )
             return self.sim_fusion(x)  # (B, fused_dim)
         
         elif self.fusion_option == 'gate':
             # Concat all modality
-            input = torch.cat([img_feat, sc_feat, st_feat], dim=-1)  # (B, 3D)
-            weights = self.gate_fusion(input)  # (B, 3)
+            x = torch.cat([img_feat, sc_feat, st_feat], dim=-1)  # (B, 3D)
+            weights = self.gate_fusion(x)  # (B, 3)
 
             # weighted sum of proj features
             proj_img = self.proj_img(img_feat)  # (B, fused_dim)
@@ -286,19 +306,61 @@ class FusionLayer(nn.Module):
             
             return self.gate_final(weighted)
 
+# =======================================================
+# 4. MIL Attention Pooling (Spot → WSI)
+# =======================================================
+class MILAttentionPooling(nn.Module):
+    def __init__(self, embed_dim=256, hidden_dim: int=None, dropout: float=0.0):
+        super().__init__()
 
+        if hidden_dim is None:
+            hidden_dim = max(64, embed_dim)
+        
+        self.attn_V = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim),
+            nn.Tanh()
+        )
+        self.attn_U = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim),
+            nn.Sigmoid()
+        )
+        self.attn_w = nn.Linear(hidden_dim, 1)
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()    
+
+
+    def forward(self, spot_embeds):
+        """
+        spot_embeds: (N_spots, D)
+        """
+        A = self.attn_w(self.attn_V(spot_embeds) * self.attn_U(spot_embeds))
+        weights = F.softmax(A, dim=0)
+        wsi_embed = torch.sum(weights * spot_embeds, dim=0)
+        return wsi_embed, weights
+    
 # -------------------------------------------------------
 # 4. Full Multi-Modal Model (Fusion + Classifier)
 # -------------------------------------------------------
-class MultiModalHestModel(nn.Module):
+class MultiModalMILModel(nn.Module):
+    """
+      - model.img_encoder(img_batch) -> (b, D)
+      - model.st_encoder(expr_batch, coord_batch) -> (b, D)   (coords ignored)
+      - model.fusion(img_feat, st_feat) -> (b, D_fused)
+      - model.mil_pooling(spot_embeds) -> (D_fused,), attn
+      - model.classifier(wsi_embed.unsqueeze(0)) -> (1, C)
+    """
     def __init__(
             self,
             num_genes: int, 
             num_classes: int=2,
+            embed_dim: int=256,
             fusion_option: str='concat',
+            img_backbone: str='resnet18',
+            img_pretrained: bool=True,
+            mil_hidden_dim: int=None,
+            mil_dropout: float=0.0,
+            fusion_dropout: float=0.2
     ):
         super().__init__()
-        embed_dim = 256
         
         # Three encoders
         self.img_encoder = ImageEncoder(embed_dim=embed_dim)
@@ -310,13 +372,21 @@ class MultiModalHestModel(nn.Module):
         self.fusion = FusionLayer(
             embed_dim=embed_dim,
             fusion_option=fusion_option,
-            fused_dim=128,
+            fused_dim=embed_dim,
             attn_heads=4,
-            dropout=0.2
+            dropout=fusion_dropout,
+            use_l2norm_for_sim=True,
         )
         
+        # WSI-level MIL pooling over spot embeddings
+        self.mil_pooling = MILAttentionPooling(
+            embed_dim=embed_dim,
+            hidden_dim=mil_hidden_dim,
+            dropout=mil_dropout,
+        )
+
         # Final classifier
-        self.classifier = nn.Linear(128, num_classes)
+        self.classifier = nn.Linear(embed_dim, num_classes)
 
         # (Optional) hooks for XAI can be added later
 
@@ -325,11 +395,12 @@ class MultiModalHestModel(nn.Module):
         img_feat = self.img_encoder(img)      # (B, 256)
         sc_feat = self.sc_encoder(expr)       # (B, 256)
         st_feat = self.st_encoder(coord)      # (B, 256)
-        
-        # Fusion module
-        fused = self.fusion(img_feat, sc_feat, st_feat)
 
-        # Final prediction
-        logits = self.classifier(fused)                   # (B, num_classes)
+        # Fusion
+        spot_embeds = self.fusion(img_feat, sc_feat, st_feat)
+        wsi_embed, attn = self.mil_pooling(spot_embeds)
         
-        return logits
+        # Final prediction
+        logits = self.classifier(wsi_embed.unsqueeze(0)).squeeze(0)
+        
+        return logits, attn
