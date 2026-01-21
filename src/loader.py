@@ -13,7 +13,7 @@ import gc
 class CustomSample:
     def __init__(self, root, sample_id):
         self.sample_id = sample_id
-        self.st_path = os.path.join(root, "st_preprocessed", f"{sample_id}.h5ad")
+        self.st_path = os.path.join(root, "st", f"{sample_id}.h5ad")
         self.patch_path = os.path.join(root, "patches", f"{sample_id}.h5")
         
         if not os.path.exists(self.st_path):
@@ -43,35 +43,33 @@ class WSIDataset(Dataset):
             adata = sc.read_h5ad(sample.st_path, backed='r')
             
             # 2. Load gene expression data
-            if self.target_genes is not None:
-                common_genes = np.intersect1d(adata.var_names, self.target_genes)
+            if self.target_genes is not None: 
+                common_genes = np.intersect1d(adata.var_names, self.target_genes)  
                 
-                if len(common_genes) == 0:
-                    expr_vals = np.zeros((adata.n_obs, len(self.target_genes)))
-                else:
-                    raw_data = adata[:, common_genes].X
-                    if hasattr(raw_data, "toarray"):
-                        expr_vals = raw_data.toarray()
-                    else:
-                        expr_vals = np.array(raw_data)
+                if len(common_genes) == 0: 
+                    expr_vals = np.zeros((adata.n_obs, len(self.target_genes))) 
+                else: raw_data = adata[:, common_genes].X 
                 
-                df = pd.DataFrame(expr_vals, columns=common_genes if len(common_genes) > 0 else [])
-                df = df.reindex(columns=self.target_genes, fill_value=0.0)
-                expr = df.values
-            else:
-                if hasattr(adata.X, 'toarray'):
-                    expr = adata.X.toarray()
-                else:
-                    expr = np.array(adata.X[:])
+                if hasattr(raw_data, "toarray"): 
+                    expr_vals = raw_data.toarray() 
+                else: expr_vals = np.array(raw_data)  
+            
+                df = pd.DataFrame(expr_vals, columns=common_genes if len(common_genes) > 0 else []) 
+                df = df.reindex(columns=self.target_genes, fill_value=0.0) 
+                expr = df.values 
+            else: 
+                if hasattr(adata.X, 'toarray'): 
+                    expr = adata.X.toarray() 
+                else: expr = np.array(adata.X[:])
             
             # 3. Metadata
             barcodes_st = adata.obs_names.to_numpy()
             coords_st = np.array(adata.obsm["spatial"][:])
             
-            val = adata.obs['disease_state'].values[0]
+            val = adata.obs['disease_state'].iloc[0]
             label_val = int(val) if not pd.isna(val) else 0
             
-            # Immediately delete AnnData
+            # Anndata 삭제 X
             del adata
             adata = None
             
@@ -88,11 +86,11 @@ class WSIDataset(Dataset):
             b2i = {b: i for i, b in enumerate(patch_barcodes)}
 
             patch_indices = []
-            st_indices = []
+            sc_indices = []
             for i, b in enumerate(barcodes_st):
                 if b in b2i:
                     patch_indices.append(b2i[b])
-                    st_indices.append(i)
+                    sc_indices.append(i)
 
             if len(patch_indices) == 0:
                 print(f"Warning: No aligned spots in {sample.sample_id}")
@@ -100,8 +98,8 @@ class WSIDataset(Dataset):
 
             # 6. Align data
             images = imgs[patch_indices]
-            expr = expr[st_indices]
-            coords = coords_st[st_indices]
+            expr = expr[sc_indices]
+            coords = coords_st[sc_indices]
             
             # 7. Sampling (memory-efficient)
             N = len(images)
@@ -109,6 +107,7 @@ class WSIDataset(Dataset):
                 sample_indices = np.sort(np.random.choice(N, self.max_spots, replace=False))
                 images = images[sample_indices]
                 expr = expr[sample_indices]
+                # sc_indices = np.array(sc_indices)[sample_indices]
                 coords = coords[sample_indices]
 
             # 8. Convert to tensors
@@ -132,10 +131,12 @@ class WSIDataset(Dataset):
             return {
                 "images": images,
                 "expr": expr,
+                # "adata": adata,
                 "coords": coords,
                 "label": label,
                 "sample_id": sample.sample_id,
-                "num_spots": len(images)
+                "num_spots": len(images),
+                # "sc_indices": sc_indices
             }
             
         except Exception as e:

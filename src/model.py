@@ -1,19 +1,26 @@
-import sys
-sys.path.insert(0, '../../scBERT')
-
 import torch
 import torch.nn as nn
 import torchvision.models as models
 import torch.nn.functional as F
-from performer_pytorch import Performer
+
+from pathlib import Path
+import json
+import numpy as np
+import anndata as ad
+
+from scgpt.tokenizer.gene_tokenizer import GeneVocab
+from scgpt.tokenizer.gene_tokenizer import tokenize_and_pad_batch
+from scgpt.model import TransformerModel
+from scgpt.tokenizer import tokenize_and_pad_batch
+from scgpt.preprocess import Preprocessor
 
 # =======================================================
 # 1. Image Encoder (Patch → Spot-level visual feature)
 # =======================================================
 class ImageEncoder(nn.Module):
-    def __init__(self, embed_dim=256):
+    def __init__(self, embed_dim=256, backbone='resnet18', pretrained=True):
         super().__init__()
-        self.backbone = models.resnet18(weights="IMAGENET1K_V1")
+        self.backbone = models.resnet18(pretrained=pretrained)
         self.backbone.fc = nn.Linear(self.backbone.fc.in_features, embed_dim)
 
     def forward(self, x):
@@ -27,47 +34,90 @@ class ImageEncoder(nn.Module):
 # 2. ST Encoder (single cell + spatial version)
 # -------------------------------------------------------
 class SCEncoder(nn.Module):
-    def __init__(self, num_genes, embed_dim=256):
+    def __init__(
+        self,
+        model_dir: str = "./scGPT_CP",
+        embed_dim: int = 256,
+        device: str = None,
+    ):
         super().__init__()
         
-        # scBERT 구조의 Performer (LM wrapper 없이)
-        self.scbert = Performer(
-            dim=256,
-            depth=6,           # scBERT layers
-            dim_head=32,
-            heads=8,          # scBERT heads
-            ff_mult=4,
-            causal=False,      # bidirectional (scBERT)
-            attn_dropout=0.1
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = torch.device(device)
+        
+        self.model_dir = Path(model_dir)
+
+        # load vocab
+        vocab_file = self.model_dir / "vocab.json"
+        self.vocab = GeneVocab.from_file(vocab_file)
+
+        # load args
+        with open(self.model_dir / "args.json") as f:
+            args = json.load(f)
+
+        self.pad_token=args["pad_token"] # "<pad>"
+        self.pad_value=args["pad_value"] # -2
+
+        # load model
+        self.model = TransformerModel(
+            ntoken=len(self.vocab),
+            d_model=args["embsize"],     # 512
+            nhead=args["nheads"],        # 8  
+            nlayers=args["nlayers"],  # 12
+            d_hid=args["d_hid"],  # 512
+            vocab=self.vocab,
+            dropout=args["dropout"],     # 0.2
+            pad_token=self.pad_token, # "<pad>"
+            pad_value=self.pad_value, # -2
+            do_mvc=False,
+            do_dab=False,  # inference -> 필요 없음
+            use_batch_labels=False,
+            domain_spec_batchnorm=False,
+            n_input_bins=args["n_bins"], # 51
+            ecs_threshold=0.0,
+            explicit_zero_prob=True,
         )
-        
-        # Token embedding + projection
-        self.token_emb = nn.Embedding(7, 256)  # 7 bins
-        self.cls_token = nn.Parameter(torch.randn(1, 1, 256))
-        self.proj = nn.Linear(256, embed_dim)
 
-    def preprocess(self, expr):
-        """Raw counts → 7 bins"""
-        expr = torch.log1p(F.normalize(expr, p=1, dim=-1) * 1e4)
-        bins = torch.linspace(0, expr.max(), 8, device=expr.device)
-        tokens = torch.bucketize(expr, bins[:-1]).long()
-        tokens = torch.clamp(tokens, 0, 6)
+        ckpt_path = self.model_dir / "best_model.pt"
+        checkpoint = torch.load(ckpt_path, map_location="cpu")
+        state_dict = {
+            k: v for k, v in checkpoint.items()
+            if not k.startswith("cls_decoder")
+        }
+        self.model.load_state_dict(state_dict, strict=False)
+        self.model.to(self.device)
 
-        return tokens
+        self.embed_dim = embed_dim
+        self.proj = nn.Linear(args["embsize"], embed_dim)
+
+    @torch.no_grad()
+    def forward(self, expr: torch.Tensor):
+        """
+        expr: (B, G) raw/normalized counts, gene order == vocab order
+        return: (B, embed_dim)
+        """
+        expr = expr.cpu().numpy()
+
+        batch = tokenize_and_pad_batch(
+            expr,
+            np.arange(expr.shape[1]),
+            max_len=30720,
+            vocab=self.vocab,
+            pad_token=self.pad_token,
+            pad_value=self.pad_value
+        )
+
+        for k, v in batch.items():
+            batch[k] = v.to(self.device)
     
-    def forward(self, expr):  # (B, num_genes)
-        B = expr.shape[0]
-        tokens = self.preprocess(expr)  # (B, G)
-        
-        # CLS + tokens
-        cls = self.cls_token.expand(B, -1, -1)
-        x = torch.cat([cls, self.token_emb(tokens)], dim=1)
-        
-        # Performer forward
-        emb = self.scbert(x)  # (B, G+1, 256)
-        cell_emb = emb[:, 0]  # CLS pooling
-        
-        return self.proj(cell_emb)  # (B, embed_dim)
+        out = self.model.encode_batch(
+            batch["genes"], batch["values"], 
+            batch["genes"] != self.vocab["<pad>"],  # mask
+            batch["genes"].shape[0]
+        )
+    
+        return self.proj(out[:, 0])  # CLS token
     
 class STEncoder(nn.Module):
     def __init__(self, embed_dim=256):
@@ -153,7 +203,7 @@ class FusionLayer(nn.Module):
         self.fused_dim = fused_dim
         self.dropout = dropout
         self.use_l2norm_for_sim = use_l2norm_for_sim
-        
+
         # pre-norm for modality feature alignment
         self.pre_norm_img = nn.LayerNorm(embed_dim)
         self.pre_norm_sc = nn.LayerNorm(embed_dim)
@@ -263,7 +313,7 @@ class FusionLayer(nn.Module):
                 sc_n = F.normalize(sc_feat, p=2, dim=1, eps=1e-8)
                 st_n = F.normalize(st_feat, p=2, dim=1, eps=1e-8)
             else:
-                 img_n, sc_n, st_n = img_feat, sc_feat, st_feat
+                img_n, sc_n, st_n = img_feat, sc_feat, st_feat
 
              # pairwise cosine
             cos_img_sc = F.cosine_similarity(img_n, sc_n, dim=1, eps=1e-8).unsqueeze(1)
@@ -336,10 +386,22 @@ class MILAttentionPooling(nn.Module):
         weights = F.softmax(A, dim=0)
         wsi_embed = torch.sum(weights * spot_embeds, dim=0)
         return wsi_embed, weights
+
+# =======================================================
+# 5. Layer after encoders
+# =======================================================
+class LinearHead(nn.Module):
+    def __init__(self, dim: int, use_ln: bool=True):
+        super().__init__()
+        self.ln = nn.LayerNorm(dim) if use_ln else nn.Identity()
+        self.fc = nn.Linear(dim, dim)
     
-# -------------------------------------------------------
-# 4. Full Multi-Modal Model (Fusion + Classifier)
-# -------------------------------------------------------
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc(self.ln(x))
+       
+# =======================================================
+# 6. Full Multi-Modal Model (Fusion + Classifier)
+# =======================================================
 class MultiModalMILModel(nn.Module):
     """
       - model.img_encoder(img_batch) -> (b, D)
@@ -358,14 +420,23 @@ class MultiModalMILModel(nn.Module):
             img_pretrained: bool=True,
             mil_hidden_dim: int=None,
             mil_dropout: float=0.0,
-            fusion_dropout: float=0.2
+            fusion_dropout: float=0.2,
+            head_use_ln: bool=True  # <- FC용 LayerNorm 사용 여부
     ):
         super().__init__()
         
         # Three encoders
-        self.img_encoder = ImageEncoder(embed_dim=embed_dim)
-        self.sc_encoder = SCEncoder(num_genes=num_genes, embed_dim=embed_dim)
+        self.img_encoder = ImageEncoder(embed_dim=embed_dim, backbone=img_backbone, pretrained=img_pretrained)
+        self.sc_encoder = SCEncoder(embed_dim=embed_dim)
         self.st_encoder = STEncoder(embed_dim=embed_dim)
+        
+        # FC head 추가
+        self.img_head = LinearHead(dim=embed_dim, use_ln=head_use_ln)
+        self.sc_head = nn.Identity()
+        self.st_head = nn.Identity()
+
+        # freeze
+        self.freeze_encoders()
         
         print(f"Fusion option: {fusion_option}")
         
@@ -390,11 +461,43 @@ class MultiModalMILModel(nn.Module):
 
         # (Optional) hooks for XAI can be added later
 
+    def freeze_encoders(self):
+        """
+        이미지 인코더 freeze / SC, ST 인코더는 유지
+        주석 해제 시 SC, ST도 freeze
+        """
+        for param in self.img_encoder.parameters():
+            param.requires_grad = False
+        # for param in self.sc_encoder.parameters():
+        #     param.requires_grad = False
+        # for param in self.st_encoder.parameters():
+        #     param.requires_grad = False
+        
+        # BN/dropout 고정
+        self.img_encoder.eval()
+        # self.sc_encoder.eval()
+        # self.st_encoder.eval()
+
+    def train(self, mode: bool=True):
+        # Override to keep encoders in eval mode during training
+        super().train(mode)
+        self.img_encoder.eval()
+        # self.sc_encoder.eval()
+        # self.st_encoder.eval()
+
     def forward(self, img: torch.Tensor, expr: torch.Tensor, coord: torch.Tensor) -> torch.Tensor:
-        # Encode each modality
-        img_feat = self.img_encoder(img)      # (B, 256)
-        sc_feat = self.sc_encoder(expr)       # (B, 256)
-        st_feat = self.st_encoder(coord)      # (B, 256)
+        # 인코더 고정
+        with torch.no_grad():
+            img_feat = self.img_encoder(img)
+            # sc_feat = self.st_encoder(expr)
+            # st_feat = self.st_encoder(coords)
+        sc_feat = self.sc_encoder(expr)         # freeze시 제거
+        st_feat = self.st_encoder(coord)        # freeze시 제거
+
+        # head만 학습
+        img_feat = self.img_head(img_feat)
+        sc_feat = self.sc_head(sc_feat)
+        st_feat = self.st_head(st_feat)
 
         # Fusion
         spot_embeds = self.fusion(img_feat, sc_feat, st_feat)

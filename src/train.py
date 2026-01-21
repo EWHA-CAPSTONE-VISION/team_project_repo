@@ -2,7 +2,7 @@ import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.amp import GradScaler, autocast
+from torch.cuda.amp import GradScaler, autocast
 import scanpy as sc
 from collections import Counter
 from tqdm import tqdm
@@ -14,7 +14,7 @@ from model import MultiModalMILModel
 # -------------------------------------------------------
 # Configuration
 # -------------------------------------------------------
-CONFIG = {
+CONFIG = { 
     "root_dir": "../hest_data/bowel",
     "epochs": 50,
     "lr": 1e-4,
@@ -56,7 +56,7 @@ def train(cfg):
     torch.cuda.empty_cache()
     
     # 1. Load samples
-    st_dir = os.path.join(cfg["root_dir"], "st_preprocessed")
+    st_dir = os.path.join(cfg["root_dir"], "st")
     all_files = [f for f in os.listdir(st_dir) if f.endswith(".h5ad")]
     
     samples = []
@@ -88,15 +88,26 @@ def train(cfg):
         num_genes=num_genes,
         num_classes=cfg["num_classes"],
         embed_dim=cfg["embed_dim"],
+        head_use_ln=True
     ).to(device)
-    
-    # Completely freeze the image encoder
-    print("❄️ Freezing Image Encoder...")
-    for param in model.img_encoder.parameters():
-        param.requires_grad = False
-    model.img_encoder.eval()  # Set to eval mode
+
+    if hasattr(model, 'freeze_encoders'):
+        model.freeze_encoders()
+
+    # 인코더 제외 학습 파라미터 명시적으로 추가 (optional)
+    trainable_params = (
+        list(model.img_head.parameters()) +
+        list(model.sc_encoder.parameters()) +
+        # list(model.sc_head.parameters()) +
+        list(model.st_encoder.parameters()) +  # <- ST 인코더는 학습
+        # list(model.st_head.parameters()) +
+        list(model.fusion.parameters()) +
+        list(model.mil_pooling.parameters()) +
+        list(model.classifier.parameters())
+    )
     
     optimizer = optim.AdamW(
+        # trainable_params, # <- 필요 시 추가!!
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=cfg["lr"],
         weight_decay=1e-4
@@ -125,7 +136,9 @@ def train(cfg):
                 # Prepare data on CPU
                 images_cpu = batch["images"]
                 expr_cpu = batch["expr"]
+                # adata_cpu = batch["adata"]
                 coords_cpu = batch["coords"]
+                # sc_indices = batch["sc_indices"]
                 label = batch["label"].unsqueeze(0).to(device)
                 
                 N = images_cpu.size(0)
@@ -141,6 +154,7 @@ def train(cfg):
                     img_batch = images_cpu[i:j].to(device)
                     expr_batch = expr_cpu[i:j].to(device)
                     coord_batch = coords_cpu[i:j].to(device)
+                    # adata_batch = adata_cpu[sc_indices[i:j]].to_memory()
                     
                     with autocast('cuda'):
                         # Do not track gradients for images
@@ -222,4 +236,4 @@ def train(cfg):
 if __name__ == "__main__":
     torch.cuda.empty_cache()
     gc.collect()
-    train(CONFIG)
+    train(CONFIG) 
