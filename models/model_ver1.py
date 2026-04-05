@@ -86,7 +86,6 @@ class SCEncoder(nn.Module):
 
 
 class STEncoder(nn.Module):
-
     def __init__(self, embed_dim=256):
 
         super().__init__()
@@ -154,18 +153,11 @@ class STEncoder(nn.Module):
 # -------------------------------------------------------
 
 class FusionLayer(nn.Module):
-
     """
     Fusion options (fused_dim=256):
 
     - 'concat'  : concat([img, sc, st]) -> MLP -> fused (B, fused_dim)
-
     - 'attn'    : treat [img, sc, st] as 3 tokens -> self-attn -> pool -> fused (B, fused_dim)
-
-    - 'sim'    : concat([img, sc, st, img*sc, img*st, sc*st, |img-sc|, |img-st|, |sc-st|, cosine(img,sc), cosine(img,st), cosine(sc,st)])
-                -> MLP -> fused
-
-    - 'gate'    : gate ([img, sc, st]) -> MLP -> fused (B, fused_dim)
     """
 
     def __init__(
@@ -223,40 +215,7 @@ class FusionLayer(nn.Module):
 
             self.out_proj = nn.Linear(embed_dim, fused_dim)
 
-        elif fusion_option == 'sim':
-
-            self.sim_fusion = nn.Sequential(
-                nn.Linear(embed_dim * 9 + 3, embed_dim * 2),
-                nn.LayerNorm(embed_dim * 2),
-                nn.GELU(),
-                nn.Dropout(0.4),
-                nn.Linear(embed_dim * 2, embed_dim),
-                nn.LayerNorm(embed_dim),
-                nn.GELU(),
-                nn.Dropout(0.3),
-            )
-
-        elif fusion_option == 'gate':
-
-            self.gate_fusion = nn.Sequential(
-                nn.Linear(embed_dim * 3, embed_dim),
-                nn.ReLU(),
-                nn.Linear(embed_dim, 3),
-                nn.Softmax(dim=-1)
-            )
-
-            self.proj_img = nn.Linear(embed_dim, fused_dim)
-            self.proj_sc = nn.Linear(embed_dim, fused_dim)
-            self.proj_st = nn.Linear(embed_dim, fused_dim)
-
-            self.gate_final = nn.Sequential(
-                nn.Linear(fused_dim, fused_dim),
-                nn.ReLU(),
-                nn.Dropout(dropout)
-            )
-
         else:
-
             raise ValueError(f"Unknown fusion option={fusion_option}")
 
     def forward(self, img_feat: torch.Tensor, sc_feat: torch.Tensor, st_feat: torch.Tensor) -> torch.Tensor:
@@ -295,56 +254,6 @@ class FusionLayer(nn.Module):
             pooled = tokens.mean(dim=1)
 
             return self.out_proj(pooled)
-
-        elif self.fusion_option == 'sim':
-
-            img_n = img_feat
-            sc_n = sc_feat
-            st_n = st_feat
-
-            img_norm = F.normalize(img_feat, p=2, dim=1, eps=1e-8)
-            sc_norm = F.normalize(sc_feat, p=2, dim=1, eps=1e-8)
-            st_norm = F.normalize(st_feat, p=2, dim=1, eps=1e-8)
-
-            cos_img_sc = F.cosine_similarity(img_norm, sc_norm, dim=1).unsqueeze(1)
-            cos_img_st = F.cosine_similarity(img_norm, st_norm, dim=1).unsqueeze(1)
-            cos_sc_st = F.cosine_similarity(sc_norm, st_norm, dim=1).unsqueeze(1)
-
-            prod_img_sc = img_n * sc_n
-            prod_img_st = img_n * st_n
-            prod_sc_st = sc_n * st_n
-
-            diff_img_sc = torch.abs(img_n - sc_n)
-            diff_img_st = torch.abs(img_n - st_n)
-            diff_sc_st = torch.abs(sc_n - st_n)
-
-            x = torch.cat([
-                img_n, sc_n, st_n,
-                prod_img_sc, prod_img_st, prod_sc_st,
-                diff_img_sc, diff_img_st, diff_sc_st,
-                cos_img_sc, cos_img_st, cos_sc_st
-            ], dim=1)
-
-            return self.sim_fusion(x)
-
-        elif self.fusion_option == 'gate':
-
-            x = torch.cat([img_feat, sc_feat, st_feat], dim=-1)
-
-            weights = self.gate_fusion(x)
-
-            proj_img = self.proj_img(img_feat)
-            proj_sc = self.proj_sc(sc_feat)
-            proj_st = self.proj_st(st_feat)
-
-            weighted = (
-                weights[:, 0:1] * proj_img +
-                weights[:, 1:2] * proj_sc +
-                weights[:, 2:3] * proj_st
-            )
-
-            return self.gate_final(weighted)
-
 
 # =======================================================
 # 4. MIL Attention Pooling (Spot → WSI)
