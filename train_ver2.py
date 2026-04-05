@@ -428,10 +428,14 @@ def main():
 
         # best 기준 (acc > auc)
         is_best = False
-        if val_acc > best_acc:
-            is_best = True
-        elif val_acc == best_acc and val_auc > best_auc:
-            is_best = True
+        if val_acc == 100:
+            print("Perfect accuracy achieved ... ignoring the current epoch")
+            is_best = False
+        else:
+            if val_acc > best_acc:
+                is_best = True
+            elif val_acc == best_acc and val_auc > best_auc:
+                is_best = True
 
         if is_best:
             torch.cuda.empty_cache()
