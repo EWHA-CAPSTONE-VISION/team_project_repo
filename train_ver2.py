@@ -12,6 +12,7 @@ from dataset.loader import CustomSample, create_wsi_dataloader
 from models.model_ver2 import MultiModalMILModel
 
 CONFIG_PATH = r"C:\Users\rdh08\Desktop\Capstone\configs\train.yaml"
+
 # ======================================================
 # Utils
 # ======================================================
@@ -25,6 +26,7 @@ def load_config(path=CONFIG_PATH):
         "root_dir": cfg["data"]["root_dir"],
         "max_spots": cfg["data"]["max_spots"],
         "metadata_dir": cfg["data"]["metadata_dir"],
+        "output_dir": cfg["data"]["output_dir"],
 
         # model
         "num_genes": cfg["model"]["num_genes"],
@@ -63,7 +65,7 @@ def set_seed(seed):
     np.random.seed(seed)
 
 
-def discover_samples(root_dir, metadata_dir):
+def discover_samples(root_dir):
     samples = []
     st_dir = os.path.join(root_dir, "st_preprocessed_global_hvg")
 
@@ -71,7 +73,7 @@ def discover_samples(root_dir, metadata_dir):
         if fn.endswith(".h5ad"):
             sid = fn[:-5]
             try:
-                s = CustomSample(root_dir, sid, metadata_dir=metadata_dir)
+                s = CustomSample(root_dir, sid)
                 if s.label in [0, 1]:
                     samples.append(s)
             except:
@@ -233,7 +235,7 @@ def main():
     device = torch.device(CONFIG["device"])
 
     # dataset
-    samples = discover_samples(CONFIG["root_dir"], CONFIG["metadata_dir"])
+    samples = discover_samples(CONFIG["root_dir"])
     train_samples, val_samples = split_dataset(samples)
 
     train_loader = create_wsi_dataloader(
@@ -245,23 +247,23 @@ def main():
 
     # model
     model = MultiModalMILModel(
-    num_genes=CONFIG["num_genes"],
-    num_classes=CONFIG["num_classes"],
-    embed_dim=CONFIG["embed_dim"],
-    fusion_option=CONFIG["fusion_option"],
-    top_k_genes=CONFIG["top_k_genes"],
+        num_genes=CONFIG["num_genes"],
+        num_classes=CONFIG["num_classes"],
+        embed_dim=CONFIG["embed_dim"],
+        fusion_option=CONFIG["fusion_option"],
+        top_k_genes=CONFIG["top_k_genes"],
 
-    use_image=True,
-    use_st=True,
+        use_image=True,
+        use_st=True,
 
-    # spatial attn
-    use_spatial_attn=CONFIG["use_spatial_attn"],
-    spatial_attn_k=CONFIG["spatial_attn_k"],
-    spatial_attn_heads=CONFIG["spatial_attn_heads"],
-    spatial_attn_dropout=CONFIG["spatial_attn_dropout"],
+        # spatial attn
+        use_spatial_attn=CONFIG["use_spatial_attn"],
+        spatial_attn_k=CONFIG["spatial_attn_k"],
+        spatial_attn_heads=CONFIG["spatial_attn_heads"],
+        spatial_attn_dropout=CONFIG["spatial_attn_dropout"],
 
-    freeze_image_encoder=CONFIG["freeze_image_encoder"],
-).to(device)
+        freeze_image_encoder=CONFIG["freeze_image_encoder"],
+    ).to(device)
 
     optimizer = optim.AdamW(model.parameters(), lr=CONFIG["lr"], weight_decay=CONFIG["weight_decay"])
     criterion = nn.CrossEntropyLoss()

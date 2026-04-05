@@ -1,3 +1,4 @@
+from pyexpat import model
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -36,6 +37,9 @@ def load_config(path=CONFIG_PATH):
         # data
         "root_dir": cfg["data"]["root_dir"],
         "max_spots": cfg["data"]["max_spots"],
+        "metadata_dir": cfg["data"]["metadata_dir"],
+        "output_dir": cfg["data"]["output_dir"],
+        "hvg_path": cfg["data"]["hvg_path"],
 
         # model
         "num_genes": cfg["model"]["num_genes"],
@@ -99,11 +103,11 @@ def discover_samples(root_dir, metadata_dir="./hest_data/metadata"):
     samples = []
     for sid in sample_ids:
         try:
-            sample = CustomSample(root_dir, sid, metadata_dir=metadata_dir)
+            sample = CustomSample(root_dir, sid)
             if sample.label in [0, 1]:
                 samples.append(sample)
         except Exception as e:
-            print(f"⚠️ Failed to load {sid}: {e}")
+            print(f"Failed to load {sid}: {e}")
 
     if not samples:
         raise RuntimeError("No valid samples were discovered.")
@@ -451,14 +455,12 @@ def train_single_run(config):
         batch_size=1,
         shuffle=True,
         max_spots=config["max_spots"],
-        hvg_genes=hvg_genes,
     )
     val_loader = create_wsi_dataloader(
         val_samples,
         batch_size=1,
         shuffle=False,
         max_spots=config["max_spots"],
-        hvg_genes=hvg_genes,
     )
 
     class_weights, label_counts = compute_class_weights(train_samples, device)
@@ -468,21 +470,12 @@ def train_single_run(config):
     print("\n[4] Build model")
     model = MultiModalMILModel(
         num_genes=config["num_genes"],
-        modality_option="multi",
         num_classes=config["num_classes"],
         embed_dim=config["embed_dim"],
         fusion_option=config["fusion_option"],
         top_k_genes=config["top_k_genes"],
-        img_backbone=config["img_backbone"],
-        img_pretrained=config["img_pretrained"],
-        mil_hidden_dim=config["mil_hidden_dim"],
-        mil_dropout=config["mil_dropout"],
-        fusion_dropout=config["fusion_dropout"],
-        head_use_ln=config["head_use_ln"],
         use_spatial_attn=config["use_spatial_attn"],
         spatial_attn_k=config["spatial_attn_k"],
-        spatial_attn_heads=config["spatial_attn_heads"],
-        spatial_attn_dropout=config["spatial_attn_dropout"],
     ).to(device)
 
     optimizer = optim.AdamW(
