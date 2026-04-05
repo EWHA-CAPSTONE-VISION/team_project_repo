@@ -156,13 +156,11 @@ class SpatialSTEncoder(nn.Module):
 # =======================================================
 # 3. Spot Fusion Module (4 options: concat, attn, sim, gate)
 # =======================================================
-class SpotFusionModule(nn.Module):
+class FusionLayer(nn.Module):
     """
     Fusion options:
     - 'concat': Simple concatenation + MLP
     - 'attn': Cross-attention between img and st
-    - 'sim': Similarity-based fusion (cosine, product, diff)
-    - 'gate': Gated fusion with learnable weights
     """
     def __init__(
         self,
@@ -207,30 +205,6 @@ class SpotFusionModule(nn.Module):
             )
             self.norm2 = nn.LayerNorm(embed_dim)
             self.out_proj = nn.Linear(embed_dim, embed_dim)
-
-        elif fusion_option == 'sim':
-            # 4D + 1 = img, st, product, abs_diff, cosine_sim
-            self.fuse = nn.Sequential(
-                nn.Linear(embed_dim * 4 + 1, embed_dim * 2),
-                nn.GELU(),
-                nn.Dropout(dropout),
-                nn.Linear(embed_dim * 2, embed_dim),
-                nn.LayerNorm(embed_dim),
-                nn.GELU(),
-                nn.Dropout(dropout),
-            )
-
-        elif fusion_option == 'gate':
-            # Gated fusion
-            self.gate = nn.Sequential(
-                nn.Linear(embed_dim * 2, embed_dim),
-                nn.GELU(),
-                nn.Dropout(dropout),
-                nn.Linear(embed_dim, 2),
-                nn.Softmax(dim=-1),
-            )
-            self.proj = nn.Linear(embed_dim, embed_dim)
-        
         else:
             raise ValueError(f"Unknown fusion_option: {fusion_option}")
 
@@ -264,37 +238,6 @@ class SpotFusionModule(nn.Module):
             # Pool (average)
             pooled = tokens.mean(dim=1)  # (N, D)
             return self.out_proj(pooled)
-
-        elif self.fusion_option == 'sim':
-            # Similarity-based features
-            if self.use_l2norm_for_sim:
-                img_n = F.normalize(img_feat, p=2, dim=-1, eps=1e-8)
-                st_n = F.normalize(st_feat, p=2, dim=-1, eps=1e-8)
-            else:
-                img_n = img_feat
-                st_n = st_feat
-            
-            # Cosine similarity
-            sim = F.cosine_similarity(img_n, st_n, dim=-1, eps=1e-8).unsqueeze(-1)  # (N, 1)
-            
-            # Element-wise product
-            prod = img_n * st_n  # (N, D)
-            
-            # Absolute difference
-            abs_diff = torch.abs(img_n - st_n)  # (N, D)
-            
-            # Concatenate all features
-            x = torch.cat([img_n, st_n, prod, abs_diff, sim], dim=-1)  # (N, 4D+1)
-            return self.fuse(x)  # (N, D)
-
-        elif self.fusion_option == 'gate':
-            # Gated fusion
-            x = torch.cat([img_feat, st_feat], dim=-1)  # (N, 2D)
-            weights = self.gate(x)  # (N, 2)
-            
-            # Weighted sum
-            fused = weights[:, 0:1] * img_feat + weights[:, 1:2] * st_feat  # (N, D)
-            return self.proj(fused)  # (N, D)
 
 # =======================================================
 # 4. MIL Attention Pooling (Spot → WSI)
@@ -387,7 +330,7 @@ class MultiModalMILModel(nn.Module):
             self.freeze_encoders()
             
         if self.use_image and self.use_st:
-            self.fusion = SpotFusionModule(
+            self.fusion = FusionLayer(
                 embed_dim=embed_dim,
                 fusion_option=fusion_option,
                 dropout=fusion_dropout,
