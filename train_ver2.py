@@ -59,6 +59,41 @@ def load_config(path=CONFIG_PATH):
 
     return CONFIG
 
+def summarize_config(CONFIG):
+    print("\n===== Training Configuration =====")
+
+    print("\n[Data]")
+    print(f"root_dir: {CONFIG['root_dir']}")
+    print(f"max_spots: {CONFIG['max_spots']}")
+
+    print("\n[Model]")
+    print(f"embed_dim: {CONFIG['embed_dim']}")
+    print(f"fusion_option: {CONFIG['fusion_option']}")
+    print(f"top_k_genes: {CONFIG['top_k_genes']}")
+
+    print("\n[Spatial Attention]")
+    print(f"use_spatial_attn: {CONFIG['use_spatial_attn']}")
+    if CONFIG["use_spatial_attn"]:
+        print(f"k: {CONFIG['spatial_attn_k']}")
+        print(f"heads: {CONFIG['spatial_attn_heads']}")
+        print(f"dropout: {CONFIG['spatial_attn_dropout']}")
+
+    print("\n[Training]")
+    print(f"epochs: {CONFIG['epochs']}")
+    print(f"lr: {CONFIG['lr']}")
+    print(f"weight_decay: {CONFIG['weight_decay']}")
+
+    print("\n[Memory]")
+    print(f"batch_spots: {CONFIG['batch_spots']}")
+    print(f"accum_steps: {CONFIG['accum_steps']}")
+    print(f"freeze_image_encoder: {CONFIG['freeze_image_encoder']}")
+
+    print("\n[Misc]")
+    print(f"device: {CONFIG['device']}")
+    print(f"seed: {CONFIG['seed']}")
+
+    print("=================================\n")
+
 def set_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -86,28 +121,89 @@ def split_dataset(samples, val_ratio=0.2):
     n = int(len(samples) * val_ratio)
     return samples[n:], samples[:n]
 
+def compress_spatial_feature(outputs_cpu, use_after=False, attn_reduce="mean"):
+    """
+    spatial_attn과 spot embedding을 이용해
+    (N, N) -> (N, D) 형태의 compressed spatial feature를 생성.
+
+    Args:
+        outputs_cpu: CPU로 옮겨진 model output dict
+        use_after: True면 spot_embeds_after_spatial 사용, False면 before 사용
+        attn_reduce: multi-head attention일 경우 "mean" 또는 "first"
+
+    Returns:
+        spatial_feature: torch.Tensor of shape (N, D)
+    """
+    attn = outputs_cpu.get("spatial_attn", None)
+    if attn is None:
+        return None
+
+    if use_after:
+        spot = outputs_cpu["spot_embeds_after_spatial"]   # (N, D)
+    else:
+        spot = outputs_cpu["spot_embeds_before_spatial"]  # (N, D)
+
+    # ---- attention shape 정리 ----
+    # case 1) (N, N)
+    if attn.dim() == 2:
+        attn_mat = attn
+
+    # case 2) (H, N, N)
+    elif attn.dim() == 3:
+        if attn_reduce == "mean":
+            attn_mat = attn.mean(dim=0)   # (N, N)
+        elif attn_reduce == "first":
+            attn_mat = attn[0]            # (N, N)
+        else:
+            raise ValueError(f"Unsupported attn_reduce: {attn_reduce}")
+
+    # case 3) (1, H, N, N) 또는 (B, H, N, N)
+    elif attn.dim() == 4:
+        # batch_size=1 전제
+        attn = attn[0]  # (H, N, N)
+        if attn_reduce == "mean":
+            attn_mat = attn.mean(dim=0)
+        elif attn_reduce == "first":
+            attn_mat = attn[0]
+        else:
+            raise ValueError(f"Unsupported attn_reduce: {attn_reduce}")
+    else:
+        raise ValueError(f"Unexpected spatial_attn shape: {attn.shape}")
+
+    # (N, N) @ (N, D) -> (N, D)
+    spatial_feature = attn_mat @ spot
+    return spatial_feature
 
 # ======================================================
 # Embedding 저장
 # ======================================================
-def save_embeddings_per_sample(outputs, sample_id, label, pred, score, save_dir):
+def save_embeddings_per_sample(outputs, sample_id, label, pred, score, save_dir,
+                               spatial_feature=None, save_full_spatial_attn=False):
     save_path = save_dir / f"{sample_id}.npz"
 
-    np.savez(
-        save_path,
-        img_feat=outputs["img_feat"].cpu().numpy() if outputs["img_feat"] is not None else None,
-        st_feat=outputs["st_feat"].cpu().numpy() if outputs["st_feat"] is not None else None,
-        spot_before=outputs["spot_embeds_before_spatial"].cpu().numpy(),
-        spot_after=outputs["spot_embeds_after_spatial"].cpu().numpy(),
-        wsi_embed=outputs["wsi_embed"].cpu().numpy(),
-        mil_attn=outputs["mil_attn"].cpu().numpy(),
-        spatial_attn=outputs["spatial_attn"].cpu().numpy() if outputs["spatial_attn"] is not None else None,
-        label=label,
-        pred=pred,
-        score=score,
-        sample_id=sample_id
-    )
+    save_dict = {
+        "img_feat": outputs["img_feat"].numpy() if outputs["img_feat"] is not None else None,
+        "st_feat": outputs["st_feat"].numpy() if outputs["st_feat"] is not None else None,
+        "spot_before": outputs["spot_embeds_before_spatial"].numpy(),
+        "spot_after": outputs["spot_embeds_after_spatial"].numpy(),
+        "wsi_embed": outputs["wsi_embed"].numpy(),
+        "mil_attn": outputs["mil_attn"].numpy(),
+        "label": label,
+        "pred": pred,
+        "score": score,
+        "sample_id": sample_id,
+    }
 
+    if spatial_feature is not None:
+        save_dict["spatial_feature"] = spatial_feature.numpy()
+
+    if save_full_spatial_attn:
+        save_dict["spatial_attn"] = (
+            outputs["spatial_attn"].numpy()
+            if outputs["spatial_attn"] is not None else None
+        )
+    
+    np.savez(save_path, **save_dict)
 
 # ======================================================
 # Train / Validate
@@ -189,7 +285,11 @@ def run_epoch(model, loader, optimizer, criterion, device, train=True):
 # Best epoch embedding 저장
 # ======================================================
 @torch.no_grad()
-def save_best_embeddings(model, loader, device, save_dir):
+def save_best_embeddings(model, loader, device, save_dir,
+    use_after_for_compress=False,
+    attn_reduce="mean",
+    save_full_spatial_attn=False
+    ):
     model.eval()
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -214,14 +314,39 @@ def save_best_embeddings(model, loader, device, save_dir):
         sid    = batch["sample_id"]
 
         outputs = model(images, expr, coords)
-
         logits = outputs["logits"]
+
         pred = logits.argmax().item()
         score = torch.softmax(logits, dim=0)[1].item()
 
-        save_embeddings_per_sample(
-            outputs, sid, label, pred, score, save_dir
+        outputs_cpu = {}
+        for k, v in outputs.items():
+            if torch.is_tensor(v):
+                outputs_cpu[k] = v.detach().cpu()
+            else:
+                outputs_cpu[k] = v
+                
+        del outputs, logits, images, expr, coords
+        torch.cuda.empty_cache()
+
+        spatial_feature = compress_spatial_feature(
+            outputs_cpu,
+            use_after=use_after_for_compress,
+            attn_reduce=attn_reduce
         )
+
+        save_embeddings_per_sample(
+            outputs=outputs_cpu,
+            sample_id=sid,
+            label=label,
+            pred=pred,
+            score=score,
+            save_dir=save_dir,
+            spatial_feature=spatial_feature,
+            save_full_spatial_attn=save_full_spatial_attn
+        )
+
+        del outputs_cpu, spatial_feature
 
 
 # ======================================================
@@ -230,6 +355,8 @@ def save_best_embeddings(model, loader, device, save_dir):
 def main():
 
     CONFIG = load_config(CONFIG_PATH)
+
+    summarize_config(CONFIG)
 
     set_seed(CONFIG["seed"])
     device = torch.device(CONFIG["device"])
@@ -284,6 +411,9 @@ def main():
         print(f"\nEpoch {epoch+1}")
 
         train_metrics = run_epoch(model, train_loader, optimizer, criterion, device, train=True)
+        
+        torch.cuda.empty_cache()
+
         val_metrics   = run_epoch(model, val_loader, optimizer, criterion, device, train=False)
 
         _, val_acc, val_auc, val_p, val_r, val_f1, cm = val_metrics
@@ -304,13 +434,22 @@ def main():
             is_best = True
 
         if is_best:
+            torch.cuda.empty_cache()
+
             best_acc = val_acc
             best_auc = val_auc
 
             torch.save(model.state_dict(), output_dir / "best_model.pt")
 
-            save_best_embeddings(model, val_loader, device, emb_dir)
-
+            save_best_embeddings(
+                model=model,
+                loader=val_loader,
+                device=device,
+                save_dir=emb_dir,
+                use_after_for_compress=False,
+                attn_reduce="mean",
+                save_full_spatial_attn=False
+            )
             np.save(output_dir / "confusion_matrix.npy", cm)
 
     # save history
