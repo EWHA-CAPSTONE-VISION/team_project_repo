@@ -5,12 +5,13 @@ import torchvision.models as models
 from models.performer_pytorch import Performer
 
 """
-An ablation-support ver. of model.py:
-- ST-only
-- Image-only
-- Multimodal(ST+Image)
+Model architecture:
+1. Image Encoder: ResNet-18 → (N_spots, embed_dim)
+2. ST Encoder: scBERT-style Performer with spatial token → (N_spots, embed_dim)
+3. Fusion Layer: concat/attn → (B, fused_dim)
+4. MIL Attention Pooling: (N_spots, fused_dim) → (fused_dim)
+5. Classifier: Linear(fused_dim → num_classes)
 """
-
 # =======================================================
 # 1. Image Encoder (Patch → Spot-level visual feature)
 # =======================================================
@@ -240,7 +241,123 @@ class FusionLayer(nn.Module):
             return self.out_proj(pooled)
 
 # =======================================================
-# 4. MIL Attention Pooling (Spot → WSI)
+# 4. Spatial Attention Layer (Spot → Spot)
+# =======================================================
+class SpatialAttention(nn.Module):
+    """
+    Spot-level self-attnention restricted to k-nn spatial neighbors
+    
+    Input:
+        spot_embeds : (N, D)
+        coords      : (N, 2)
+    Output:
+        refined     : (N, D)
+    """
+    def __init__(
+        self,
+        embed_dim=256,
+        num_heads=4,
+        k=8,    # neighbors
+        dropout=0.1,
+        include_self=True
+    ):
+        super().__init__()
+        assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
+
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.k = k
+        self.include_self = include_self
+
+        self.q_proj = nn.Linear(embed_dim, embed_dim)
+        self.k_proj = nn.Linear(embed_dim, embed_dim)
+        self.v_proj = nn.Linear(embed_dim, embed_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.norm2 = nn.LayerNorm(embed_dim)
+
+        self.ffn = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim * 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(embed_dim * 4, embed_dim),
+            nn.Dropout(dropout),
+        )
+
+        self.attn_dropout = nn.Dropout(dropout)
+    
+    def _build_knn_mask(self, coords):
+        """
+        coords: (N, 2)
+        return:
+            attn_mask: (N, N) boolean mask
+                True -> allowed
+                False -> masked 
+        """
+        N = coords.size(0)
+        device = coords.device
+
+        # pairwise distance
+        dist = torch.cdist(coords, coords, p=2)  # (N, N)
+
+        # Find kNN excluding self
+        if self.include_self:
+            k_eff = min(self.k + 1, N)  # include self
+            knn_idx = dist.topk(k_eff, largest=False).indices  # (N, k_eff)
+        else:
+            # self는 멀리 보내서 제외
+            dist = dist + torch.eye(N, device=device) * 1e6
+            k_eff = min(self.k, N - 1)
+            knn_idx = dist.topk(k_eff, largest=False).indices  # (N, k_eff)
+
+        mask = torch.zeros(N, N, device=device, dtype=torch.bool)
+        row_idx = torch.arange(N, device=device).unsqueeze(1).expand_as(knn_idx)
+        mask[row_idx, knn_idx] = True
+
+        if self.include_self:
+            mask.fill_diagonal_(True)
+
+        return mask
+
+    def forward(self, spot_embeds, coords, return_attn=False):
+        """
+        spot_embeds: (N, D)
+        coords: (N, 2)
+        """
+        N, D = spot_embeds.shape
+
+        x = self.norm1(spot_embeds)
+
+        q = self.q_proj(x).view(N, self.num_heads, self.head_dim).transpose(0, 1)  # (H, N, Dh)
+        k = self.k_proj(x).view(N, self.num_heads, self.head_dim).transpose(0, 1)  # (H, N, Dh)
+        v = self.v_proj(x).view(N, self.num_heads, self.head_dim).transpose(0, 1)  # (H, N, Dh)
+
+        # scaled dot-product attention
+        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim ** 0.5)  # (H, N, N)    
+        knn_mask = self._build_knn_mask(coords)  # (N, N)
+        attn_scores = attn_scores.masked_fill(~knn_mask.unsqueeze(0), float('-inf'))
+        
+        attn = torch.softmax(attn_scores, dim=-1)  # (H, N, N)
+        attn = self.attn_dropout(attn)
+
+        out = torch.matmul(attn, v)  # (H, N, Dh)
+        out = out.transpose(0, 1).contiguous().view(N, D)  # (N, D)
+        out = self.out_proj(out)
+
+        # residual
+        x = spot_embeds + out
+
+        # FFN
+        x = x + self.ffn(self.norm2(x))
+
+        if return_attn:
+            return x, attn
+        return x
+
+# =======================================================
+# 5. MIL Attention Pooling (Spot → WSI)
 # =======================================================
 class MILAttentionPooling(nn.Module):
     def __init__(self, embed_dim=256, hidden_dim=128):
@@ -296,7 +413,13 @@ class MultiModalMILModel(nn.Module):
 
         # ablation용
         use_image =True,
-        use_st=True
+        use_st=True,
+
+        # spatial attn
+        use_spatial_attn=False,
+        spatial_attn_k=8,
+        spatial_attn_heads=4,
+        spatial_attn_dropout=0.1,
     ):
         super().__init__()
 
@@ -337,6 +460,18 @@ class MultiModalMILModel(nn.Module):
             )
         else:
             self.fusion = None
+
+        self.use_spatial_attn = use_spatial_attn
+        if use_spatial_attn:
+            self.spatial_attn = SpatialAttention(
+                embed_dim=embed_dim,
+                num_heads=spatial_attn_heads,
+                k=spatial_attn_k,
+                dropout=spatial_attn_dropout,
+                include_self=True
+            )
+        else:
+            self.spatial_attn = None
 
         # MIL Pooling
         self.mil_pooling = MILAttentionPooling(
@@ -410,6 +545,15 @@ class MultiModalMILModel(nn.Module):
         elif self.use_st:       # ST only
             spot_embeds = st_feat
 
+        spot_embeds_before_spatial = spot_embeds.clone()
+
+        # Spatial spot-to-spot attention
+        spatial_attn_map = None
+        if self.use_spatial_attn:
+            spot_embeds, spatial_attn_map = self.spatial_attn(
+                spot_embeds, coords, return_attn=True
+            )
+
         # MIL Pooling
         wsi_embed, mil_attn = self.mil_pooling(spot_embeds)
         mil_attn = mil_attn.squeeze(-1)  # (N_spots,)
@@ -422,9 +566,14 @@ class MultiModalMILModel(nn.Module):
             "mil_attn": mil_attn,
             "gene_attn": gene_attn,
             "gene_indices": gene_indices,
+            "spatial_attn": spatial_attn_map,
+            "img_feat": img_feat if self.use_image else None,
+            "st_feat": st_feat if self.use_st else None,
+            "spot_embeds_before_spatial": spot_embeds_before_spatial,
+            "spot_embeds_after_spatial": spot_embeds,
+            "wsi_embed": wsi_embed,
         }
         if return_spot_embeds:
             out["spot_embeds"] = spot_embeds
 
         return out
-    
