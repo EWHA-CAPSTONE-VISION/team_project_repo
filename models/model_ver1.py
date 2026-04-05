@@ -4,6 +4,15 @@ import torchvision.models as models
 import torch.nn.functional as F
 from models.performer_pytorch import Performer
 
+"""
+Model architecture:
+1. Image Encoder: ResNet-18 → (N_spots, embed_dim)
+2. SC Encoder: scBERT Performer → (B, embed_dim)
+3. ST Encoder: MLP + Positional Encoding + Transformer → (B, embed_dim)
+4. Fusion Layer: concat/attn → (B, fused_dim)
+5. MIL Attention Pooling: (N_spots, fused_dim) → (fused_dim)
+6. Classifier: Linear(fused_dim → num_classes)
+"""
 
 # =======================================================
 # 1. Image Encoder (Patch → Spot-level visual feature)
@@ -25,6 +34,9 @@ class ImageEncoder(nn.Module):
         """
         return self.backbone(x)
 
+# =======================================================
+# 2. SC Encoder (Gene expression → Cell-level feature)
+# =======================================================
 
 class SCEncoder(nn.Module):
 
@@ -84,7 +96,9 @@ class SCEncoder(nn.Module):
 
         return self.proj(cell_emb)  # (B, embed_dim)
 
-
+# =======================================================
+# 3. ST Encoder (Spatial coordinates → Spot-level feature)
+# =======================================================
 class STEncoder(nn.Module):
     def __init__(self, embed_dim=256):
 
@@ -148,10 +162,9 @@ class STEncoder(nn.Module):
         return self.fc(seq)
 
 
-# -------------------------------------------------------
-# 3. Fusion Layer
-# -------------------------------------------------------
-
+# =======================================================
+# 4. Fusion Layer
+# =======================================================
 class FusionLayer(nn.Module):
     """
     Fusion options (fused_dim=256):
@@ -256,7 +269,123 @@ class FusionLayer(nn.Module):
             return self.out_proj(pooled)
 
 # =======================================================
-# 4. MIL Attention Pooling (Spot → WSI)
+# 5. Spatial Attention Layer (Spot → Spot)
+# =======================================================
+class SpatialAttention(nn.Module):
+    """
+    Spot-level self-attnention restricted to k-nn spatial neighbors
+    
+    Input:
+        spot_embeds : (N, D)
+        coords      : (N, 2)
+    Output:
+        refined     : (N, D)
+    """
+    def __init__(
+        self,
+        embed_dim=256,
+        num_heads=4,
+        k=8,    # neighbors
+        dropout=0.1,
+        include_self=True
+    ):
+        super().__init__()
+        assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
+
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.k = k
+        self.include_self = include_self
+
+        self.q_proj = nn.Linear(embed_dim, embed_dim)
+        self.k_proj = nn.Linear(embed_dim, embed_dim)
+        self.v_proj = nn.Linear(embed_dim, embed_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.norm2 = nn.LayerNorm(embed_dim)
+
+        self.ffn = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim * 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(embed_dim * 4, embed_dim),
+            nn.Dropout(dropout),
+        )
+
+        self.attn_dropout = nn.Dropout(dropout)
+    
+    def _build_knn_mask(self, coords):
+        """
+        coords: (N, 2)
+        return:
+            attn_mask: (N, N) boolean mask
+                True -> allowed
+                False -> masked 
+        """
+        N = coords.size(0)
+        device = coords.device
+
+        # pairwise distance
+        dist = torch.cdist(coords, coords, p=2)  # (N, N)
+
+        # Find kNN excluding self
+        if self.include_self:
+            k_eff = min(self.k + 1, N)  # include self
+            knn_idx = dist.topk(k_eff, largest=False).indices  # (N, k_eff)
+        else:
+            # self는 멀리 보내서 제외
+            dist = dist + torch.eye(N, device=device) * 1e6
+            k_eff = min(self.k, N - 1)
+            knn_idx = dist.topk(k_eff, largest=False).indices  # (N, k_eff)
+
+        mask = torch.zeros(N, N, device=device, dtype=torch.bool)
+        row_idx = torch.arange(N, device=device).unsqueeze(1).expand_as(knn_idx)
+        mask[row_idx, knn_idx] = True
+
+        if self.include_self:
+            mask.fill_diagonal_(True)
+
+        return mask
+
+    def forward(self, spot_embeds, coords, return_attn=False):
+        """
+        spot_embeds: (N, D)
+        coords: (N, 2)
+        """
+        N, D = spot_embeds.shape
+
+        x = self.norm1(spot_embeds)
+
+        q = self.q_proj(x).view(N, self.num_heads, self.head_dim).transpose(0, 1)  # (H, N, Dh)
+        k = self.k_proj(x).view(N, self.num_heads, self.head_dim).transpose(0, 1)  # (H, N, Dh)
+        v = self.v_proj(x).view(N, self.num_heads, self.head_dim).transpose(0, 1)  # (H, N, Dh)
+
+        # scaled dot-product attention
+        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim ** 0.5)  # (H, N, N)    
+        knn_mask = self._build_knn_mask(coords)  # (N, N)
+        attn_scores = attn_scores.masked_fill(~knn_mask.unsqueeze(0), float('-inf'))
+        
+        attn = torch.softmax(attn_scores, dim=-1)  # (H, N, N)
+        attn = self.attn_dropout(attn)
+
+        out = torch.matmul(attn, v)  # (H, N, Dh)
+        out = out.transpose(0, 1).contiguous().view(N, D)  # (N, D)
+        out = self.out_proj(out)
+
+        # residual
+        x = spot_embeds + out
+
+        # FFN
+        x = x + self.ffn(self.norm2(x))
+
+        if return_attn:
+            return x, attn
+        return x
+    
+# =======================================================
+# 6. MIL Attention Pooling (Spot → WSI)
 # =======================================================
 
 class MILAttentionPooling(nn.Module):
@@ -292,7 +421,7 @@ class MILAttentionPooling(nn.Module):
 
 
 # =======================================================
-# 5. Layer after encoders
+# 7. Layer after encoders
 # =======================================================
 
 class LinearHead(nn.Module):
@@ -328,11 +457,19 @@ class MultiModalMILModel(nn.Module):
             mil_hidden_dim: int = None,
             mil_dropout: float = 0.0,
             fusion_dropout: float = 0.2,
-            head_use_ln: bool = True
+            head_use_ln: bool = True,
+
+            # spatial attn ablation
+            use_spatial_attn: bool = False,
+            spatial_attn_k: int = 8,
+            spatial_attn_heads: int = 4,
+            spatial_attn_dropout: float = 0.1,
     ):
 
         super().__init__()
 
+        self.modality_option = modality_option
+        self.embed_dim = embed_dim
         self.img_encoder = ImageEncoder(embed_dim=embed_dim, backbone=img_backbone, pretrained=img_pretrained)
 
         self.sc_encoder = SCEncoder(
@@ -362,6 +499,19 @@ class MultiModalMILModel(nn.Module):
             use_l2norm_for_sim=True,
         )
 
+        self.use_spatial_attn = use_spatial_attn
+
+        if self.use_spatial_attn:
+            self.spatial_attn = SpatialAttention(
+                embed_dim=embed_dim,
+                num_heads=spatial_attn_heads,
+                k=spatial_attn_k,
+                dropout=spatial_attn_dropout,
+                include_self=True,
+            )
+        else:
+            self.spatial_attn = None
+
         self.mil_pooling = MILAttentionPooling(
             embed_dim=embed_dim,
             hidden_dim=mil_hidden_dim,
@@ -382,47 +532,120 @@ class MultiModalMILModel(nn.Module):
         super().train(mode)
         self.img_encoder.eval()
 
-    def forward(self, modality_option, img: torch.Tensor, expr: torch.Tensor, coord: torch.Tensor):
+    def forward(
+        self,
+        img: torch.Tensor,
+        expr: torch.Tensor,
+        coord: torch.Tensor,
+        batch_spots: int = None,
+        save_embeddings: bool = False,
+    ):
+        """
+        img   : (N, 3, 224, 224)
+        expr  : (N, G)
+        coord : (N, 2)
 
-        with torch.no_grad():
+        Returns end-to-end result for one WSI sample.
+        Internally uses chunking for encoder/fusion stage if batch_spots is given.
+        """
 
-            img_feat = self.img_encoder(img)
-            sc_feat = self.sc_encoder(expr)
-            st_feat = self.st_encoder(coord)
+        if img.dim() != 4:
+            raise ValueError(f"img must be (N, 3, H, W), got {img.shape}")
+        if expr.dim() != 2:
+            raise ValueError(f"expr must be (N, G), got {expr.shape}")
+        if coord.dim() != 2:
+            raise ValueError(f"coord must be (N, 2), got {coord.shape}")
 
-        if modality_option == 'st':
+        if not (img.shape[0] == expr.shape[0] == coord.shape[0]):
+            raise ValueError(
+                f"spot count mismatch: img={img.shape[0]}, expr={expr.shape[0]}, coord={coord.shape[0]}"
+            )
 
-            sc_feat = self.sc_head(sc_feat)
-            st_feat = self.st_head(st_feat)
+        modality_option = self.modality_option
+        n_spots = img.shape[0]
 
-            spot_embeds = torch.cat([img_feat, st_feat], dim=1)
+        if batch_spots is None or batch_spots <= 0:
+            batch_spots = n_spots
 
-            wsi_embed, attn = self.mil_pooling(spot_embeds)
+        img_chunks = []
+        sc_chunks = []
+        st_chunks = []
+        fused_chunks = []
 
-            logits = self.classifier(wsi_embed.unsqueeze(0)).squeeze(0)
+        for i in range(0, n_spots, batch_spots):
+            j = min(i + batch_spots, n_spots)
 
-        elif modality_option == 'img':
+            img_b = img[i:j]
+            expr_b = expr[i:j]
+            coord_b = coord[i:j]
 
-            img_feat = self.img_head(img_feat)
+            with torch.no_grad():
+                img_feat = self.img_encoder(img_b)
 
-            wsi_embed, attn = self.mil_pooling(img_feat)
+            if modality_option == "img":
+                img_feat = self.img_head(img_feat)
+                img_chunks.append(img_feat)
 
-            logits = self.classifier(wsi_embed.unsqueeze(0)).squeeze(0)
+            elif modality_option == "multi":
+                img_feat = self.img_head(img_feat)
+                sc_feat = self.sc_head(self.sc_encoder(expr_b))
+                st_feat = self.st_head(self.st_encoder(coord_b))
 
-        elif modality_option == 'multi':
+                fused_feat = self.fusion(img_feat, sc_feat, st_feat)
 
-            img_feat = self.img_head(img_feat)
-            sc_feat = self.sc_head(sc_feat)
-            st_feat = self.st_head(st_feat)
+                img_chunks.append(img_feat)
+                sc_chunks.append(sc_feat)
+                st_chunks.append(st_feat)
+                fused_chunks.append(fused_feat)
 
-            spot_embeds = self.fusion(img_feat, sc_feat, st_feat)
+            else:
+                raise ValueError(f"Unsupported modality_option={modality_option}")
 
-            wsi_embed, attn = self.mil_pooling(spot_embeds)
+        spatial_attn_map = None
+        spot_embeds_before_spatial = None
+        spot_embeds_after_spatial = None
 
-            logits = self.classifier(wsi_embed.unsqueeze(0)).squeeze(0)
+        if modality_option == "img":
+            mil_input = torch.cat(img_chunks, dim=0)
 
-        else:
+        elif modality_option == "multi":
+            img_feat_all = torch.cat(img_chunks, dim=0)
+            sc_feat_all = torch.cat(sc_chunks, dim=0)
+            st_feat_all = torch.cat(st_chunks, dim=0)
+            fused_all = torch.cat(fused_chunks, dim=0)
 
-            raise ValueError(f"Unknown modality option={modality_option}")
+            spot_embeds_before_spatial = fused_all
 
-        return logits, attn
+            if self.use_spatial_attn:
+                mil_input, spatial_attn_map = self.spatial_attn(
+                    fused_all, coord, return_attn=True
+                )
+                spot_embeds_after_spatial = mil_input
+            else:
+                mil_input = fused_all
+
+        wsi_embed, attn = self.mil_pooling(mil_input)
+        logits = self.classifier(wsi_embed.unsqueeze(0)).squeeze(0)
+
+        out = {
+            "logits": logits,
+            "wsi_embed": wsi_embed,
+            "attn_weights": attn,
+            "spatial_attn_map": spatial_attn_map,
+            "spot_embeds_before_spatial": spot_embeds_before_spatial,
+            "spot_embeds_after_spatial": spot_embeds_after_spatial,
+        }
+
+        if save_embeddings:
+            if modality_option == "img":
+                out["img_embed"] = mil_input
+            elif modality_option == "multi":
+                out["img_embed"] = img_feat_all
+                out["sc_embed"] = sc_feat_all
+                out["st_embed"] = st_feat_all
+                out["spot_fusion_embed"] = fused_all
+                if self.use_spatial_attn:
+                    out["spatial_embed"] = mil_input
+            out["coords"] = coord
+
+        return out
