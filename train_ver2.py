@@ -325,7 +325,7 @@ def save_best_embeddings(model, loader, device, save_dir,
                 outputs_cpu[k] = v.detach().cpu()
             else:
                 outputs_cpu[k] = v
-                
+
         del outputs, logits, images, expr, coords
         torch.cuda.empty_cache()
 
@@ -396,7 +396,7 @@ def main():
     criterion = nn.CrossEntropyLoss()
 
     # dirs
-    output_dir = Path("./results_single_run")
+    output_dir = Path("./results_ver2")
     emb_dir = output_dir / "embeddings" / "best_epoch"
 
     output_dir.mkdir(parents=True, exist_ok=True)
