@@ -385,6 +385,9 @@ def is_better_epoch(curr_metrics, best_metrics):
     if best_metrics is None:
         return True
 
+    if curr_metrics["val_acc"] == 100:
+        return False
+
     if curr_metrics["val_acc"] > best_metrics["val_acc"]:
         return True
     if curr_metrics["val_acc"] < best_metrics["val_acc"]:
