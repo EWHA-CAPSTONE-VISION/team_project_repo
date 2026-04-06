@@ -154,7 +154,7 @@ def split_samples(samples, val_ratio=0.2, seed=42):
     labels = [s.label for s in samples]
     train_samples, val_samples = train_test_split(
         samples,
-        test_size=val_ratio,
+        test_size=int(len(samples) * val_ratio),
         random_state=seed,
         stratify=labels,
     )
