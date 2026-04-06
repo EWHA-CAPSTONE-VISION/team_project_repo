@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 from dataset.loader import CustomSample, create_wsi_dataloader
 from models.model_ver1 import MultiModalMILModel
 
-CONFIG_PATH = r"C:\Users\rdh08\Desktop\Capstone\configs\train.yaml"
+CONFIG_PATH = r"YOUR_PATH/configs/train.yaml"
 
 def load_config(path=CONFIG_PATH):
     import yaml
@@ -38,7 +38,7 @@ def load_config(path=CONFIG_PATH):
         "root_dir": cfg["data"]["root_dir"],
         "max_spots": cfg["data"]["max_spots"],
         "metadata_dir": cfg["data"]["metadata_dir"],
-        "output_dir": cfg["data"]["output_dir"],
+        "output_dir": "results_ver1",
         "hvg_path": cfg["data"]["hvg_path"],
 
         # model
@@ -71,6 +71,41 @@ def load_config(path=CONFIG_PATH):
     }
 
     return CONFIG
+
+def summarize_config(CONFIG):
+    print("\n===== Training Configuration =====")
+
+    print("\n[Data]")
+    print(f"root_dir: {CONFIG['root_dir']}")
+    print(f"max_spots: {CONFIG['max_spots']}")
+
+    print("\n[Model]")
+    print(f"embed_dim: {CONFIG['embed_dim']}")
+    print(f"fusion_option: {CONFIG['fusion_option']}")
+    print(f"top_k_genes: {CONFIG['top_k_genes']}")
+
+    print("\n[Spatial Attention]")
+    print(f"use_spatial_attn: {CONFIG['use_spatial_attn']}")
+    if CONFIG["use_spatial_attn"]:
+        print(f"k: {CONFIG['spatial_attn_k']}")
+        print(f"heads: {CONFIG['spatial_attn_heads']}")
+        print(f"dropout: {CONFIG['spatial_attn_dropout']}")
+
+    print("\n[Training]")
+    print(f"epochs: {CONFIG['epochs']}")
+    print(f"lr: {CONFIG['lr']}")
+    print(f"weight_decay: {CONFIG['weight_decay']}")
+
+    print("\n[Memory]")
+    print(f"batch_spots: {CONFIG['batch_spots']}")
+    print(f"accum_steps: {CONFIG['accum_steps']}")
+    print(f"freeze_image_encoder: {CONFIG['freeze_image_encoder']}")
+
+    print("\n[Misc]")
+    print(f"device: {CONFIG['device']}")
+    print(f"seed: {CONFIG['seed']}")
+
+    print("=================================\n")
 
 def set_seed(seed: int):
     random.seed(seed)
@@ -281,7 +316,8 @@ def validate(model, loader, criterion, config, device, save_embeddings=False):
         logits = outputs["logits"]
         label = outputs["label"]
 
-        loss = criterion(logits.unsqueeze(0), label.unsqueeze(0))
+        with autocast(enabled=(device.type == "cuda")):
+          loss = criterion(logits.unsqueeze(0), label.unsqueeze(0))
         total_loss += loss.item()
 
         pred = logits.argmax().item()
@@ -387,80 +423,82 @@ def save_confusion_matrix_png(cm, save_path, class_names=("Healthy", "Cancer")):
     plt.close(fig)
 
 
-def save_best_embeddings(collected, save_root):
-    save_root = Path(save_root)
-    per_sample_dir = save_root / "per_sample"
-    per_sample_dir.mkdir(parents=True, exist_ok=True)
+@torch.no_grad()
+def save_best_embeddings(model, loader, device, config, save_dir):
+    model.eval()
+    save_dir.mkdir(parents=True, exist_ok=True)
 
-    manifest = {
-        "sample_ids": [],
-        "labels": [],
-        "preds": [],
-        "scores": [],
-        "files": [],
-    }
+    for batch in tqdm(loader, desc="Saving embeddings"):
+        outputs = forward_one_sample(
+            model,
+            batch,
+            device=device,
+            batch_spots=config["batch_spots"],
+            save_embeddings=True,
+        )
 
-    for item in collected:
-        sid = item["sample_id"]
-        sample_file = per_sample_dir / f"{sid}.npz"
-        np.savez_compressed(sample_file, **item)
+        sid = outputs["sample_id"]
+        label = outputs["label"].item()
 
-        manifest["sample_ids"].append(sid)
-        manifest["labels"].append(item["label"])
-        manifest["preds"].append(item["pred"])
-        manifest["scores"].append(item["score"])
-        manifest["files"].append(str(sample_file.name))
+        logits = outputs["logits"]
+        pred = logits.argmax().item()
+        score = torch.softmax(logits, dim=0)[1].item()
 
-    np.savez_compressed(
-        save_root / "manifest.npz",
-        sample_ids=np.array(manifest["sample_ids"], dtype=object),
-        labels=np.array(manifest["labels"], dtype=np.int64),
-        preds=np.array(manifest["preds"], dtype=np.int64),
-        scores=np.array(manifest["scores"], dtype=np.float32),
-        files=np.array(manifest["files"], dtype=object),
-    )
+        np.savez_compressed(
+            save_dir / f"{sid}.npz",
+            img_embed=outputs["img_embed"].cpu().numpy() if "img_embed" in outputs else None,
+            sc_embed=outputs["sc_embed"].cpu().numpy() if "sc_embed" in outputs else None,
+            st_embed=outputs["st_embed"].cpu().numpy() if "st_embed" in outputs else None,
+            spot_fusion_embed=outputs["spot_fusion_embed"].cpu().numpy(),
+            wsi_embed=outputs["wsi_embed"].cpu().numpy(),
+            mil_attn=outputs["mil_attn"].cpu().numpy(),
+            spatial_attn_map=outputs["spatial_attn_map"].cpu().numpy() if outputs["spatial_attn_map"] is not None else None,
+            label=label,
+            pred=pred,
+            score=score,
+            sample_id=sid,
+        )
 
-    with open(save_root / "manifest.json", "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False)
 
+def main():
+    CONFIG = load_config(CONFIG_PATH)
 
-def train_single_run(config):
-    set_seed(config["seed"])
+    summarize_config(CONFIG)
 
-    device = torch.device(config["device"] if torch.cuda.is_available() else "cpu")
-    output_root = Path(config["output_dir"])
-    output_root.mkdir(parents=True, exist_ok=True)
+    set_seed(CONFIG["seed"])
+    device = torch.device(CONFIG["device"] if torch.cuda.is_available() else "cpu")
+    
+    output_dir = Path("./results_ver1") / f"fusion_{CONFIG['fusion_option']}_spatialattn_{CONFIG['use_spatial_attn']}"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("=" * 80)
-    print(f"Single run / fusion={config['fusion_option']} / spatial_attn={config['use_spatial_attn']}")
-    print("=" * 80)
-
-    print("\n[1] Discover samples directly from root_dir")
-    all_samples = discover_samples(config["root_dir"], config["metadata_dir"])
+    embed_dir = output_dir / "embeddings" / "best_epoch"
+    embed_dir.mkdir(parents=True, exist_ok=True)
+    
+    all_samples = discover_samples(CONFIG["root_dir"], CONFIG["metadata_dir"])
     train_samples, val_samples = split_samples(
         all_samples,
-        val_ratio=config["val_ratio"],
-        seed=config["seed"],
+        val_ratio=0.2,
+        seed=CONFIG["seed"],
     )
     print(f"Total: {len(all_samples)}")
     print(f"Train: {len(train_samples)}")
     print(f"Val:   {len(val_samples)}")
 
     print("\n[2] Load HVGs")
-    hvg_genes = load_global_hvg(config["hvg_path"])
+    hvg_genes = load_global_hvg(CONFIG["hvg_path"])
 
     print("\n[3] Build dataloaders")
     train_loader = create_wsi_dataloader(
         train_samples,
         batch_size=1,
         shuffle=True,
-        max_spots=config["max_spots"],
+        max_spots=CONFIG["max_spots"],
     )
     val_loader = create_wsi_dataloader(
         val_samples,
         batch_size=1,
         shuffle=False,
-        max_spots=config["max_spots"],
+        max_spots=CONFIG["max_spots"],
     )
 
     class_weights, label_counts = compute_class_weights(train_samples, device)
@@ -469,19 +507,19 @@ def train_single_run(config):
 
     print("\n[4] Build model")
     model = MultiModalMILModel(
-        num_genes=config["num_genes"],
-        num_classes=config["num_classes"],
-        embed_dim=config["embed_dim"],
-        fusion_option=config["fusion_option"],
-        top_k_genes=config["top_k_genes"],
-        use_spatial_attn=config["use_spatial_attn"],
-        spatial_attn_k=config["spatial_attn_k"],
+        num_genes=CONFIG["num_genes"],
+        num_classes=CONFIG["num_classes"],
+        embed_dim=CONFIG["embed_dim"],
+        fusion_option=CONFIG["fusion_option"],
+        top_k_genes=CONFIG["top_k_genes"],
+        use_spatial_attn=CONFIG["use_spatial_attn"],
+        spatial_attn_k=CONFIG["spatial_attn_k"],
     ).to(device)
 
     optimizer = optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
-        lr=config["lr"],
-        weight_decay=config["weight_decay"],
+        lr=CONFIG["lr"],
+        weight_decay=CONFIG["weight_decay"],
     )
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     scaler = GradScaler(enabled=(device.type == "cuda"))
@@ -499,16 +537,9 @@ def train_single_run(config):
 
     best_metrics = None
     best_epoch = -1
-
-    ckpt_dir = output_root / "checkpoints"
-    metric_dir = output_root / "metrics"
-    embed_dir = output_root / "embeddings" / "best_epoch"
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-    metric_dir.mkdir(parents=True, exist_ok=True)
-    embed_dir.mkdir(parents=True, exist_ok=True)
-
-    for epoch in range(config["epochs"]):
-        print(f"\nEpoch {epoch + 1}/{config['epochs']}")
+    
+    for epoch in range(CONFIG["epochs"]):
+        print(f"\nEpoch {epoch + 1}/{CONFIG['epochs']}")
 
         train_loss, train_acc = train_epoch(
             model,
@@ -516,7 +547,7 @@ def train_single_run(config):
             criterion,
             optimizer,
             scaler,
-            config,
+            CONFIG,
             device,
         )
 
@@ -524,7 +555,7 @@ def train_single_run(config):
             model,
             val_loader,
             criterion,
-            config,
+            CONFIG,
             device,
             save_embeddings=False,
         )
@@ -548,60 +579,42 @@ def train_single_run(config):
             best_epoch = epoch + 1
             best_metrics = val_metrics
 
-            torch.save(model.state_dict(), ckpt_dir / "best_model.pt")
+            torch.save(model.state_dict(), output_dir / "best_model.pt")
 
-            best_metrics_with_embeds, collected = validate(
+            best_metrics_with_embeds, _ = validate(
                 model,
                 val_loader,
                 criterion,
-                config,
+                CONFIG,
                 device,
-                save_embeddings=True,
+                save_embeddings=False,
             )
             best_metrics = best_metrics_with_embeds
 
-            save_best_embeddings(collected, embed_dir)
+            save_best_embeddings(
+                model=model,
+                loader=val_loader,
+                device=device,
+                config=CONFIG,
+                save_dir=embed_dir,
+            )
 
-            np.save(metric_dir / "confusion_matrix.npy", np.array(best_metrics["confusion_matrix"], dtype=np.int64))
-            save_confusion_matrix_png(best_metrics["confusion_matrix"], metric_dir / "confusion_matrix.png")
-
-            with open(metric_dir / "best_metrics.json", "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "best_epoch": best_epoch,
-                        **best_metrics,
-                    },
-                    f,
-                    indent=2,
-                    ensure_ascii=False,
-                )
+            np.save(output_dir / "confusion_matrix.npy",
+                    np.array(best_metrics["confusion_matrix"], dtype=np.int64))
 
             print(
                 f"Updated best epoch -> {best_epoch} "
                 f"(val_acc={best_metrics['val_acc']:.2f}, val_auc={best_metrics['val_auc']:.4f})"
             )
 
-    with open(metric_dir / "history.json", "w", encoding="utf-8") as f:
+    with open(output_dir / "history.json", "w", encoding="utf-8") as f:
         json.dump(history, f, indent=2, ensure_ascii=False)
-
-    final_summary = {
-        "best_epoch": best_epoch,
-        "fusion_option": config["fusion_option"],
-        "use_spatial_attn": config["use_spatial_attn"],
-        "train_size": len(train_samples),
-        "val_size": len(val_samples),
-        "best_metrics": best_metrics,
-    }
-    with open(output_root / "run_summary.json", "w", encoding="utf-8") as f:
-        json.dump(final_summary, f, indent=2, ensure_ascii=False)
 
     print("\n" + "=" * 80)
     print(f"Training complete. Best epoch: {best_epoch}")
-    print(f"Output saved to: {output_root}")
+    print(f"Output saved to: {output_dir}")
     print("=" * 80)
 
 
 if __name__ == "__main__":
-    CONFIG = load_config(CONFIG_PATH)
-
-    train_single_run(CONFIG)
+    main()
