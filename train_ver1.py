@@ -224,6 +224,8 @@ def forward_one_sample(model, batch, device, batch_spots, save_embeddings=False)
         "wsi_embed": outputs["wsi_embed"],
         "mil_attn": outputs["attn_weights"],
         "spatial_attn_map": outputs["spatial_attn_map"],
+        "spot_embeds_before_spatial": outputs["spot_embeds_before_spatial"] if "spot_embeds_before_spatial" in outputs else None,
+        "spot_embeds_after_spatial": outputs["spot_embeds_after_spatial"] if "spot_embeds_after_spatial" in outputs else None,
     }
 
     if save_embeddings:
@@ -452,10 +454,14 @@ def save_best_embeddings(model, loader, device, config, save_dir):
             img_embed=outputs["img_embed"].cpu().numpy() if "img_embed" in outputs else None,
             sc_embed=outputs["sc_embed"].cpu().numpy() if "sc_embed" in outputs else None,
             st_embed=outputs["st_embed"].cpu().numpy() if "st_embed" in outputs else None,
-            spot_fusion_embed=outputs["spot_fusion_embed"].cpu().numpy(),
-            wsi_embed=outputs["wsi_embed"].cpu().numpy(),
-            mil_attn=outputs["mil_attn"].cpu().numpy(),
+
+            spot_before=outputs["spot_embeds_before_spatial"].detach().cpu().numpy() if outputs["spot_embeds_before_spatial"] is not None else None,
+            spot_after=outputs["spot_embeds_after_spatial"].detach().cpu().numpy() if outputs["spot_embeds_after_spatial"] is not None else None,
             spatial_attn_map=outputs["spatial_attn_map"].cpu().numpy() if outputs["spatial_attn_map"] is not None else None,
+            
+            wsi_embed=outputs["wsi_embed"].cpu().numpy(),   # sample level embedding
+            mil_attn=outputs["mil_attn"].cpu().numpy(),     # MIL attention score
+
             label=label,
             pred=pred,
             score=score,

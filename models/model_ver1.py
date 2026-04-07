@@ -421,9 +421,8 @@ class MILAttentionPooling(nn.Module):
 
 
 # =======================================================
-# 7. Layer after encoders
+# 7. Linear Head 
 # =======================================================
-
 class LinearHead(nn.Module):
 
     def __init__(self, dim: int, use_ln: bool = True):
@@ -441,7 +440,6 @@ class LinearHead(nn.Module):
 # -------------------------------------------------------
 # 6. Full Multi-Modal Model (Fusion + Classifier)
 # -------------------------------------------------------
-
 class MultiModalMILModel(nn.Module):
 
     def __init__(
@@ -460,12 +458,12 @@ class MultiModalMILModel(nn.Module):
             head_use_ln: bool = True,
 
             # spatial attn ablation
-            use_spatial_attn: bool = False,
+            use_spatial_attn: bool = True,
             spatial_attn_k: int = 8,
             spatial_attn_heads: int = 4,
             spatial_attn_dropout: float = 0.1,
     ):
-
+ 
         super().__init__()
 
         self.modality_option = modality_option
@@ -624,13 +622,13 @@ class MultiModalMILModel(nn.Module):
             else:
                 mil_input = fused_all
 
-        wsi_embed, attn = self.mil_pooling(mil_input)
+        wsi_embed, mil_attn = self.mil_pooling(mil_input)
         logits = self.classifier(wsi_embed.unsqueeze(0)).squeeze(0)
 
         out = {
             "logits": logits,
             "wsi_embed": wsi_embed,
-            "attn_weights": attn,
+            "attn_weights": mil_attn,
             "spatial_attn_map": spatial_attn_map,
             "spot_embeds_before_spatial": spot_embeds_before_spatial,
             "spot_embeds_after_spatial": spot_embeds_after_spatial,
