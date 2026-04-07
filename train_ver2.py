@@ -178,12 +178,12 @@ def compress_spatial_feature(outputs_cpu, use_after=False, attn_reduce="mean"):
 # Embedding 저장
 # ======================================================
 def save_embeddings_per_sample(outputs, sample_id, label, pred, score, save_dir,
-                               spatial_feature=None, save_full_spatial_attn=False):
+                               spatial_feature=None, save_full_spatial_attn=True):
     save_path = save_dir / f"{sample_id}.npz"
 
     save_dict = {
-        "img_feat": outputs["img_feat"].numpy() if outputs["img_feat"] is not None else None,
-        "st_feat": outputs["st_feat"].numpy() if outputs["st_feat"] is not None else None,
+        "img_embed": outputs["img_embed"].numpy() if outputs["img_embed"] is not None else None,
+        "st_embed": outputs["st_embed"].numpy() if outputs["st_embed"] is not None else None,
         "spot_before": outputs["spot_embeds_before_spatial"].numpy(),
         "spot_after": outputs["spot_embeds_after_spatial"].numpy(),
         "wsi_embed": outputs["wsi_embed"].numpy(),
@@ -195,12 +195,12 @@ def save_embeddings_per_sample(outputs, sample_id, label, pred, score, save_dir,
     }
 
     if spatial_feature is not None:
-        save_dict["spatial_feature"] = spatial_feature.numpy()
+        save_dict["spatial_embed"] = spatial_feature.numpy()
 
     if save_full_spatial_attn:
-        save_dict["spatial_attn"] = (
-            outputs["spatial_attn"].numpy()
-            if outputs["spatial_attn"] is not None else None
+        save_dict["spatial_attn_map"] = (
+            outputs["spatial_attn_map"].numpy()
+            if outputs["spatial_attn_map"] is not None else None
         )
     
     np.savez(save_path, **save_dict)
@@ -288,7 +288,7 @@ def run_epoch(model, loader, optimizer, criterion, device, train=True):
 def save_best_embeddings(model, loader, device, save_dir,
     use_after_for_compress=False,
     attn_reduce="mean",
-    save_full_spatial_attn=False
+    save_full_spatial_attn=True
     ):
     model.eval()
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -396,7 +396,7 @@ def main():
     criterion = nn.CrossEntropyLoss()
 
     # dirs
-    output_dir = Path("./results_ver2")
+    output_dir = Path("./results_ver2") / f"fusion_{CONFIG['fusion_option']}_spatialattn_{CONFIG['use_spatial_attn']}"
     emb_dir = output_dir / "embeddings" / "best_epoch"
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -452,7 +452,7 @@ def main():
                 save_dir=emb_dir,
                 use_after_for_compress=False,
                 attn_reduce="mean",
-                save_full_spatial_attn=False
+                save_full_spatial_attn=True
             )
             np.save(output_dir / "confusion_matrix.npy", cm)
 

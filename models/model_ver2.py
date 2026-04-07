@@ -382,7 +382,7 @@ class MILAttentionPooling(nn.Module):
         return wsi_embed, weights
 
 # =======================================================
-# 5. Linear Head
+# 6. Linear Head
 # =======================================================
 class LinearHead(nn.Module):
     def __init__(self, dim: int, use_ln: bool=True):
@@ -488,9 +488,9 @@ class MultiModalMILModel(nn.Module):
             nn.Linear(128, num_classes)
         )
         
-        print(f"✓ Model 1 initialized with fusion_option='{fusion_option}'")
+        print(f"Model 1 initialized with fusion_option='{fusion_option}'")
         if freeze_image_encoder:
-            print(f"✓ Image Encoder frozen (only img_head trainable)")
+            print(f"Image Encoder frozen (only img_head trainable)")
 
     def freeze_encoders(self):
         """ResNet backbone만 freeze"""
@@ -556,7 +556,7 @@ class MultiModalMILModel(nn.Module):
 
         # MIL Pooling
         wsi_embed, mil_attn = self.mil_pooling(spot_embeds)
-        mil_attn = mil_attn.squeeze(-1)  # (N_spots,)
+        # mil_attn = mil_attn.squeeze(-1)  # (N_spots,)
 
         # Classification
         logits = self.classifier(wsi_embed)
@@ -566,9 +566,9 @@ class MultiModalMILModel(nn.Module):
             "mil_attn": mil_attn,
             "gene_attn": gene_attn,
             "gene_indices": gene_indices,
-            "spatial_attn": spatial_attn_map,
-            "img_feat": img_feat if self.use_image else None,
-            "st_feat": st_feat if self.use_st else None,
+            "spatial_attn_map": spatial_attn_map,
+            "img_embed": img_feat if self.use_image else None,
+            "st_embed": st_feat if self.use_st else None,
             "spot_embeds_before_spatial": spot_embeds_before_spatial,
             "spot_embeds_after_spatial": spot_embeds,
             "wsi_embed": wsi_embed,
