@@ -60,7 +60,7 @@
 
 | 이름   | GitHub | Profile |
 |--------|--------|---------|
-| 류다현 | [@unhyepnhj](https://github.com/unhyepnhj) | <img src="https://avatars.githubusercontent.com/github-id1" width="50" height="50"> |
+| 류다현 | [@rlyryu](https://github.com/rlyryu) | <img src="https://avatars.githubusercontent.com/github-id1" width="50" height="50"> |
 | 박은서 | [@oukl31](https://github.com/oukl31) | <img src="https://avatars.githubusercontent.com/github-id2" width="50" height="50"> |
 | 유지혜 | [@jihyeyoo](https://github.com/jihyeyoo)   | <img src="https://avatars.githubusercontent.com/jihyeyoo" width="50" height="50"> |
 
