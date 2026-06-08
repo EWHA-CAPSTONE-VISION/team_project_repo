@@ -37,6 +37,7 @@
     └── reversible.py         # scBERT 스크립트 (수정)
 ├── Project-Scenario.md   # 프로젝트 시나리오 및 연구 기획
 ├── README.md             # 프로젝트 개요 (본 문서)
+├── rquirements.txt       # 환경 설정
 ├── train.py              # 기본 학습 실행 스크립트
 ├── train_ablation.py     # Ablation study 학습 스크립트
 ├── train_ver1.py         # Late fusion 방식 학습 스크립트
@@ -52,7 +53,7 @@
 | **0. 프로젝트 주제 확정** | 문제 정의 및 목적 설정 | 완료 |
 | **1. 데이터셋 조사 및 전처리** | 데이터셋 후보 조사, 구조 분석 | 완료 |
 | **2. Baseline 모델 설계 및 구현** | 멀티모달 dual-encoder 구성 및 성능 비교 | 완료 |
-| **3. 모델 개선 / XAI 적용** | 경량화·성능 개선·downstream task 실험 | 진행 중 |
+| **3. 모델 개선 / XAI 적용** | 경량화·성능 개선·downstream task 실험 | 완료 |
 
 ## ✔️ Data & Method
 
@@ -60,9 +61,7 @@
 
 **Data**
 - Whole Slide Image(WSI) & Spatial Transcriptomics(ST) gene expression paired 데이터 사용
-- 공개 멀티모달 의료 데이터 데이터셋 HEST-1K, STimage-1K4M 활용)
-- [HEST-1k](https://huggingface.co/datasets/MahmoodLab/hest): 
-- [STimage-1K4M](https://huggingface.co/datasets/jiawennnn/STimage-1K4M): 
+- 공개 멀티모달 의료 데이터 데이터셋 HEST-1K, STimage-1K4M 활용([HEST-1k](https://huggingface.co/datasets/MahmoodLab/hest), [STimage-1K4M](https://huggingface.co/datasets/jiawennnn/STimage-1K4M))
 
 **Modeling**
 - Image Encoder(CNN, ViT, etc.)
@@ -76,22 +75,38 @@
 
 ## ✔️ how to use
 
-**install**
+**1. install**
+Git을 이용해 레포지토리를 다운로드합니다.
 ```
 git clone https://github.com/EWHA-CAPSTONE-VISION/team_project_repo.git
 cd team_project_repo
 
 ```
 
-**build**
+**2. build**
+가상환경을 생성한 후 필요한 패키지를 설치합니다.
 ```
+conda create -n mosaic-st python=3.10
+conda activate mosaic-st
+
+pip install -r requirements.txt
 
 ```
+데이터셋은 `dataset/` 디렉토리를 참고해 준비합니다. 
 
-**test**
+**3. test**
+준비된 데이터셋을 이용하여 모델이 정상적으로 동작하는지 확인합니다.
 ```
+python train.py
 
 ```
+학습 과정에서는 training loss, validation loss, evaluation metrics 등이 출력되며, 모델 체크포인트가 저장됩니다.
+실험 설정에 따라 다른 버전의 모델도 실행할 수 있습니다.
+
+[demo](https://github.com)
+
+저장된 체크포인트를 활용하면 매번 재학습할 필요 없이 ablation study를 실행하거나 새로운 데이터에 대해 예측해볼 수 있습니다.
+위 데모에서 활용된 체크포인트는 용량 이슈로 본 레포지토리에 업로드되지 않았으며, 필요시 메일로 컨택부탁드립니다.
 
 ## ✔️ Team Members
 
