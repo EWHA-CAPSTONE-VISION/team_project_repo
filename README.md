@@ -16,16 +16,33 @@
 
 ## ✔️ Repository Structure
 ```
-.
-├── configs/                # Experiment configuration files (YAML)
-├── dataset/                # 데이터셋 로딩 및 전처리 모듈
-├── models/                 # 모델 아키텍처 정의
-├── Project-Scenario.md     # 프로젝트 시나리오 및 연구 기획
-├── README.md               # 프로젝트 개요 (본 문서)
-├── train.py                # 기본 학습 실행 스크립트
-├── train_ablation.py       # Ablation study 학습 스크립트
-├── test.py                 # 기본 평가 실행 스크립트
-└── test_ablation.py        # Ablation study 평가 스크립트
+├── analysis              # UMAP 생성
+    ├── train_UMAP_per_spot.py
+    └── train_UMAP_per_spot_modality.py
+├── configs/              # Experiment configuration files (YAML)
+    ├── train.yaml            # train config 스크립트
+    └── train_ablation.yaml   # ablation study config 스크립트
+├── dataset/              # 데이터셋 로딩 및 전처리 모듈
+    ├── extract_patches_st.py # ST patch 추출 스크립트
+    ├── loader.py             # 데이터 로드 스크립트
+    ├── preprocesing.py       # 전처리 스크립트
+    ├── repreprocessing.py    # 재전처리 스크립트
+    └── unify_hest_st.py      # 데이터셋 형식 통일 스크립트
+├── models/               # 모델 아키텍처 정의
+    ├── model.py              # 기본 모델 스크립트
+    ├── model_ablation.py     # ablation 모델 스크립트
+    ├── model_ver1.py         # Late fusion 방식 모델 스크립트
+    ├── model_ver2.py         # Early fusion 방식 모델 스크립트
+    ├── performer_pytorch.py  # scBERT 스크립트 (수정)
+    └── reversible.py         # scBERT 스크립트 (수정)
+├── Project-Scenario.md   # 프로젝트 시나리오 및 연구 기획
+├── README.md             # 프로젝트 개요 (본 문서)
+├── train.py              # 기본 학습 실행 스크립트
+├── train_ablation.py     # Ablation study 학습 스크립트
+├── train_ver1.py         # Late fusion 방식 학습 스크립트
+├── train_ver2.py         # Early fusion 방식 학습 스크립트
+├── test.py               # 기본 평가 실행 스크립트
+└── test_ablation.py      # Ablation study 평가 스크립트
 ```
 
 ## ✔️ Project Status & Current Progress
@@ -42,9 +59,10 @@
 본 프로젝트는 다음과 같은 기술 스택을 기반으로 합니다.
 
 **Data**
-- Whole Slide Image(WSI)
-- Spatial Transcriptomics(ST) gene expression
-- 공개 멀티모달 의료 데이터셋(e.g., HEST-1k, STimage-1K4M)
+- Whole Slide Image(WSI) & Spatial Transcriptomics(ST) gene expression paired 데이터 사용
+- 공개 멀티모달 의료 데이터 데이터셋 HEST-1K, STimage-1K4M 활용)
+- [HEST-1k](https://huggingface.co/datasets/MahmoodLab/hest): 
+- [STimage-1K4M](https://huggingface.co/datasets/jiawennnn/STimage-1K4M): 
 
 **Modeling**
 - Image Encoder(CNN, ViT, etc.)
@@ -55,6 +73,25 @@
 - Attention heatmap
 - Patch-level feature importance
 - Gene-level attribution 분석
+
+## ✔️ how to use
+
+**install**
+```
+git clone https://github.com/EWHA-CAPSTONE-VISION/team_project_repo.git
+cd team_project_repo
+
+```
+
+**build**
+```
+
+```
+
+**test**
+```
+
+```
 
 ## ✔️ Team Members
 
