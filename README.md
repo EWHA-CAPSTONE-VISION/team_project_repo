@@ -103,7 +103,7 @@ python train.py
 학습 과정에서는 training loss, validation loss, evaluation metrics 등이 출력되며, 모델 체크포인트가 저장됩니다.
 실험 설정에 따라 다른 버전의 모델도 실행할 수 있습니다.
 
-[demo](https://github.com)
+[demo](https://drive.google.com/file/d/1UIKalObZKYBMv4wdXMrD-Rd9u6l0R9ih/view?usp=sharing)
 
 저장된 체크포인트를 활용하면 매번 재학습할 필요 없이 ablation study를 실행하거나 새로운 데이터에 대해 예측해볼 수 있습니다.
 위 데모에서 활용된 체크포인트는 용량 이슈로 본 레포지토리에 업로드되지 않았으며, 필요시 메일로 컨택부탁드립니다.
